@@ -1,0 +1,12 @@
+.env
+data/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.langgraph_api/
+.DS_Store
+
+# Personal learning notes, not part of the repo
+walkthroughs/

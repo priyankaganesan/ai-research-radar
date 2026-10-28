@@ -26,8 +26,21 @@ uv run radar init-db
 uv run radar --help
 uv run radar config       # show active settings
 uv run radar init-db      # create the local store
+uv run radar ingest --days 3          # fetch recent arXiv papers and embed them
+uv run radar ingest hf                # Hugging Face Daily Papers + upvotes
+uv run radar ingest labs              # AI lab blog posts
+uv run radar ingest hn                # Hacker News AI stories + points
+uv run radar ingest all               # every source, then Semantic Scholar enrichment
+uv run radar enrich                   # citation counts + TLDRs for recent papers
+uv run radar show 2401.10774          # one item with its TLDR and signals
+uv run radar search "speculative decoding"   # retrieval only, no LLM
+uv run radar ask "How does Medusa speed up decoding?" --steps
+uv run radar ask "..." --no-retrieval  # same model, no tools: the comparison baseline
+uv run radar eval --file evals/questions.jsonl   # retrieval recall@5
+uv run radar reindex --backend lance [--ann]  # copy vectors into LanceDB (optional IVF-PQ index)
+uv run radar compare-backends                  # sqlite-vec vs. LanceDB: recall, latency, disk
 uv run pytest             # tests (never call Ollama or the network)
 uv run ruff check .       # lint
 ```
 
-`ingest`, `ask`, `daily`, `rate`, `watchlist` and `eval` are stubs until their milestones land.
+`daily`, `rate` and `watchlist` are stubs until their milestones land.

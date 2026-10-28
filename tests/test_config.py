@@ -18,3 +18,22 @@ def test_env_overrides(monkeypatch):
 
 def test_tracing_off_in_tests(settings):
     assert settings.langsmith_tracing is False
+
+
+def test_tracing_turned_off_without_key(monkeypatch, capsys):
+    import os
+
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+    get_settings.cache_clear()
+    s = get_settings()
+    assert os.environ["LANGSMITH_TRACING"] == "false"
+    assert s.langsmith_tracing is False
+    assert "LANGSMITH_API_KEY" in capsys.readouterr().err
+
+
+def test_tracing_kept_with_key(monkeypatch):
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+    get_settings.cache_clear()
+    assert get_settings().langsmith_tracing is True

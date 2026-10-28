@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example Lab Blog</title>
+    <link>https://lab.example.com/blog</link>
+    <item>
+      <title>Introducing Model X</title>
+      <link>https://lab.example.com/blog/model-x</link>
+      <pubDate>{RECENT_RFC822}</pubDate>
+      <description>&lt;p&gt;Model X is our newest &lt;b&gt;reasoning&lt;/b&gt; model &amp;amp; it runs 2x faster.&lt;/p&gt;</description>
+    </item>
+    <item>
+      <title>An old post</title>
+      <link>https://lab.example.com/blog/old</link>
+      <pubDate>Mon, 06 Jan 2025 10:00:00 GMT</pubDate>
+      <description>Old news.</description>
+    </item>
+  </channel>
+</rss>

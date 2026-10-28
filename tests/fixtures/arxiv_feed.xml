@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <title>ArXiv Query: search_query=cat:cs.CL</title>
+  <entry>
+    <id>http://arxiv.org/abs/2401.10774v3</id>
+    <published>{RECENT}T10:00:00Z</published>
+    <updated>{RECENT}T10:00:00Z</updated>
+    <title>Medusa: Simple LLM Inference Acceleration Framework
+      with Multiple Decoding Heads</title>
+    <summary>  Large language models decode one token at a time. We add extra decoding heads
+      that predict several future tokens in parallel, giving a 2x speedup.  </summary>
+    <author><name>Tianle Cai</name></author>
+    <author><name>Yuhong Li</name></author>
+    <link href="http://arxiv.org/abs/2401.10774v3" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2401.10774v3" rel="related" type="application/pdf"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2005.11401v4</id>
+    <published>2020-05-22T17:00:00Z</published>
+    <updated>2021-04-12T17:00:00Z</updated>
+    <title>Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks</title>
+    <summary>We combine a pretrained retriever with a sequence-to-sequence generator.</summary>
+    <author><name>Patrick Lewis</name></author>
+    <link href="http://arxiv.org/abs/2005.11401v4" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2005.11401v4" rel="related" type="application/pdf"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+</feed>

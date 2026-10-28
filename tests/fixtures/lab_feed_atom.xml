@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Atom Lab</title>
+  <entry>
+    <title>Scaling sparse attention</title>
+    <link href="https://atom.example.com/sparse"/>
+    <updated>{RECENT_ISO}T08:00:00Z</updated>
+    <summary>Short summary.</summary>
+    <content type="html">&lt;h2&gt;Overview&lt;/h2&gt;&lt;p&gt;The full post body about sparse attention.&lt;/p&gt;</content>
+  </entry>
+</feed>

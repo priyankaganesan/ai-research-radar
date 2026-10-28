@@ -11,7 +11,7 @@ The plan for the whole codebase. `CLAUDE.md` holds the rules and design; this fi
 | M1.5 | Second vector backend | `VECTOR_BACKEND=lance` runs the same Q&A on LanceDB; eval compares exact (sqlite-vec) vs. approximate (LanceDB) search on recall@5, latency and disk | M1 |
 | M1.6 | MCP server (required) | `radar mcp` exposes the store and search tools over MCP; Claude Desktop / Claude Code can search the research store; the Q&A graph can load its tools through MCP | M1 |
 | M2 | Daily pipeline | `radar daily` writes a ranked 8-item digest from arXiv | M1 |
-| M3 | More sources | Hugging Face upvotes, Semantic Scholar citations and TLDRs, lab RSS, Hacker News feed into scoring | M2 |
+| M3 | More sources | Hugging Face upvotes, Semantic Scholar citations and TLDRs, lab RSS, Hacker News feed into scoring. Collection built first (before M2) so the data is queryable; scoring uses it in M2 | M2 |
 | M4 | Long-term memory and feedback | Ratings update the profile, reserved slots, early-buzz watchlist re-checks, gap logging | M2, M3 |
 | M5 | Going deeper | Full-text fetch and section chunking when a paper gets repeated questions | M1 |
 | M7 | FastAPI web UI | `radar serve` opens a local web app: ask with streamed answers and citations, browse and rate the digest, search the store, watchlist | M2, M4 (build before recording the presentation) |
@@ -42,15 +42,17 @@ ai-research-radar/
 │   │   └── migrations/       # 001_init.sql, 002_memory.sql, ...
 │   ├── sources/
 │   │   ├── arxiv.py          # fetch_recent(categories, since), search(query)
+│   │   ├── http.py           # shared client + retry/backoff, SourceUnavailable (M3)
 │   │   ├── hf_papers.py      # daily papers + upvotes
-│   │   ├── semantic_scholar.py  # citations, velocity inputs, TLDR, related
-│   │   ├── rss.py            # lab blogs/announcements
-│   │   └── hackernews.py     # AI-related front-page items
+│   │   ├── semantic_scholar.py  # batch lookup (citations, TLDR) + search
+│   │   ├── lab_blogs.py      # lab blog RSS/Atom feeds -> kind "post"
+│   │   └── hackernews.py     # AI stories via Algolia HN search; arXiv links -> hn_points
 │   ├── rag/
 │   │   ├── chunking.py       # abstract = 1 chunk; full text = sections, ~500 tokens, overlap
 │   │   ├── index.py          # embed + write to the vector index and FTS table
 │   │   ├── vector_index.py   # VectorIndex protocol + SqliteVecIndex (M1)
-│   │   ├── lance_index.py    # LanceIndex (M1.5)
+│   │   ├── lance_index.py    # LanceIndex: flat or IVF-PQ search (M1.5)
+│   │   ├── compare.py        # exact vs. approximate: recall, latency, disk (M1.5)
 │   │   └── retrieve.py       # hybrid search + RRF -> list[Passage]
 │   ├── tools/                # LangChain @tool wrappers, one per file
 │   │   ├── store_search.py
@@ -63,6 +65,7 @@ ai-research-radar/
 │   │   ├── qa.py             # Q&A ReAct graph
 │   │   ├── daily.py          # fixed-order daily graph
 │   │   └── prompts.py        # all prompt templates in one place
+│   ├── context.py            # AppContext: settings, DB connection, embeddings, vector index
 │   ├── services.py           # ask(), search(), get_item(), digest(), rate(): one layer used by CLI, MCP and web
 │   ├── mcp_server.py         # MCP server (M1.6): wraps services
 │   ├── web/                  # FastAPI app (M7)
@@ -95,8 +98,12 @@ M1:
 - `chunks_vec` virtual table (`vec0`, 1024-dim float) keyed by `chunks.id`
 - `chunks_fts` virtual table (FTS5 over `text`, plus the paper title)
 
-M2 and M3:
-- `signals(paper_id, date, hf_upvotes, citations, citation_velocity, hn_points)`: one row per paper per day, so attention over time is visible
+M3 (built, `003_sources.sql`):
+- `items.tldr`: Semantic Scholar's one-sentence summary, when it has one
+- `signals(item_id, date, hf_upvotes, citations, influential_citations, hn_points, hn_comments)`: one row per item per day, so attention over time is visible; each source fills only its own columns (upsert with COALESCE). Citation velocity is computed in M2 from the change between rows.
+- Item IDs: arXiv ID for papers (HF, S2 and HN-linked papers merge with arXiv ones), `post:<sha1 of link>` for lab posts, `hn:<story id>` for other HN stories, `s2:<paperId>` for S2 papers with no arXiv ID.
+
+M2:
 - `digests(date, paper_id, rank, slot TEXT 'main'|'early_buzz'|'lab_launch', score, reason)`
 - `summaries(paper_id, text, model, created_at)`
 
@@ -122,10 +129,11 @@ The LangGraph checkpointer gets its own file (`data/checkpoints.db`) so short-te
 
 ## Second vector backend (M1.5)
 
-- **SQLite stays the source of truth.** LanceDB stores only `(chunk_id, vector)` plus the filter columns it needs (`kind`, `published`). Anything in LanceDB can be rebuilt from SQLite.
-- `radar reindex --backend lance` copies vectors from SQLite into `data/lance/` and builds an IVF-PQ index once there are enough rows; below that, LanceDB's flat search is used.
-- Writes go through `index.py`, which writes SQLite first, then the active vector index. If the index write fails, `reindex` repairs it.
-- **Comparison (eval):** same questions, both backends: recall@5, p50/p95 search latency, disk size, and the effect of the IVF-PQ settings (`nprobes`, `refine_factor`) on recall. Record results in `evals/results/`.
+- **SQLite stays the source of truth.** LanceDB stores only `(chunk_id, vector)`. Filters (`kind`, `since`) are applied in SQLite after the vector search, as with sqlite-vec, so LanceDB needs no filter columns. Anything in LanceDB can be rebuilt from SQLite.
+- Writes go through `index.py`, which always writes vectors to SQLite's `chunks_vec` inside the batch transaction, then copies them to LanceDB after the commit when `VECTOR_BACKEND=lance`. If that copy fails, `reindex` repairs it.
+- `radar reindex --backend lance [--ann]` copies vectors from SQLite into `data/lance/` (no re-embedding). It builds an IVF-PQ index with `--ann`, or automatically at 5,000+ vectors; below that LanceDB does a flat (exact) scan. `radar reindex --backend sqlite` re-embeds every chunk with the current `EMBED_MODEL`.
+- IVF-PQ settings: partitions = min(sqrt(n), n / 256), because LanceDB trains each partition on at least 256 vectors (a few hundred papers get one partition); 64 sub-vectors (16 dims each), so a 4 KB vector compresses to 64 bytes. Search-time knobs: `LANCE_NPROBES`, `LANCE_REFINE_FACTOR`.
+- **Comparison:** `radar compare-backends [--file evals/questions.jsonl]` runs the same queries on both: recall@k of LanceDB against exact search (no labels needed; default queries are 50 item titles), p50/p95 vector-search latency, disk size, a sweep over `nprobes` x `refine_factor` once an ANN index exists, and recall against expected papers when the file has `expected_ids`. Results are saved to `evals/results/backends-YYYYMMDD-HHMM.md`.
 - LanceDB, like embedded Chroma, assumes one writing process. Run `daily` and `reindex` one at a time.
 
 ## MCP server (M1.6, required)
@@ -151,10 +159,10 @@ MCP (Model Context Protocol) is the standard way for AI apps to discover and cal
 State:
 ```python
 class QAState(TypedDict):
-    messages: Annotated[list, add_messages]   # question, follow-ups, tool calls
-    passages: list[Passage]                   # evidence gathered so far
-    searches_done: list[str]                  # avoid repeating a query
-    steps: int                                # stopping rule
+    messages: Annotated[list, add_messages]  # question, follow-ups, tool calls
+    passages: list[Passage]  # evidence gathered so far
+    searches_done: list[str]  # avoid repeating a query
+    steps: int  # stopping rule
     verdict: Literal["", "sufficient", "insufficient"]
 ```
 
@@ -167,7 +175,7 @@ START → rewrite_query → reason ──tool call──▶ tools ──▶ evid
                                                           └── insufficient, steps≥MAX ──▶ abstain ──▶ END
 ```
 - `rewrite_query`: Qwen turns a follow-up into a self-contained search query, using message history.
-- `reason`: Qwen with tools bound (`store_search`, `search_arxiv`; later `fetch_full_text`, `semantic_scholar_lookup`).
+- `reason`: Qwen with tools bound (`store_search`, `search_arxiv`, `semantic_scholar_lookup` (M3); later `fetch_full_text`).
 - `evidence_check`: Qwen with structured output `{sufficient: bool, missing: str}`, given only the question and the passages. It runs with thinking mode on.
 - `answer`: it answers only from passages, and every claim has a `[paper_id]` citation. A post-check drops any citation not in `passages`.
 - `abstain`: it says what is missing, writes a row to `gaps` (M4), and lists the closest papers it found.
@@ -203,12 +211,16 @@ score = w_rel * relevance        # cosine(paper embedding, profile vector)
 ## CLI
 
 ```
-radar ingest [--days 7] [--categories cs.AI,cs.CL,cs.LG]   # M1
-radar ask "question" [--no-retrieval] [--thread ID]        # M1
+radar ingest [arxiv|hf|labs|hn|all] [--days N]            # M1 (arxiv), M3 (others; all = every source + enrich)
+radar enrich [--days 30] [--limit 500]                     # M3: S2 citations + TLDRs
+radar show ITEM_ID                                         # M3: one item, its TLDR and signals
+radar search "query" [--k 5] [--since YYYY-MM-DD]          # M1 (retrieval only, no LLM)
+radar ask "question" [--no-retrieval] [--thread ID] [--steps]  # M1
 radar daily                                                # M2
 radar rate PAPER_ID useful|not_relevant|skipped            # M4
 radar watchlist                                            # M4
-radar reindex --backend sqlite|lance                       # M1.5
+radar reindex --backend sqlite|lance [--ann]               # M1.5
+radar compare-backends [--file F] [--k 5] [--sample 50]    # M1.5
 radar mcp [--http]                                         # M1.6
 radar serve [--port 8000]                                  # M7
 radar eval [--model ...] [--embed-model ...] [--backend ...]  # M1 basic, M6 full

@@ -1,0 +1,30 @@
+{
+  "total": 2,
+  "offset": 0,
+  "data": [
+    {
+      "paperId": "d4e5f6",
+      "externalIds": {"ArXiv": "2211.17192"},
+      "title": "Fast Inference from Transformers via Speculative Decoding",
+      "abstract": "Inference from large autoregressive models like Transformers is slow.",
+      "citationCount": 1200,
+      "influentialCitationCount": 190,
+      "tldr": {"model": "tldr@v2.0.0", "text": "A small draft model proposes tokens that the large model verifies in parallel."},
+      "publicationDate": "2022-11-30",
+      "authors": [{"authorId": "2", "name": "Yaniv Leviathan"}],
+      "url": "https://www.semanticscholar.org/paper/d4e5f6"
+    },
+    {
+      "paperId": "nopaper",
+      "externalIds": {},
+      "title": "A paper with no abstract or TLDR",
+      "abstract": null,
+      "citationCount": 3,
+      "influentialCitationCount": 0,
+      "tldr": null,
+      "publicationDate": null,
+      "authors": [],
+      "url": "https://www.semanticscholar.org/paper/nopaper"
+    }
+  ]
+}

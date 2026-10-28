@@ -1,0 +1,15 @@
+[
+  {
+    "paperId": "a1b2c3",
+    "externalIds": {"ArXiv": "2401.10774", "DOI": "10.48550/arXiv.2401.10774"},
+    "title": "Medusa: Simple LLM Inference Acceleration Framework with Multiple Decoding Heads",
+    "abstract": "Large language models use auto-regressive decoding.",
+    "citationCount": 312,
+    "influentialCitationCount": 41,
+    "tldr": {"model": "tldr@v2.0.0", "text": "Medusa adds extra decoding heads that predict several tokens at once."},
+    "publicationDate": "2024-01-19",
+    "authors": [{"authorId": "1", "name": "Tianle Cai"}],
+    "url": "https://www.semanticscholar.org/paper/a1b2c3"
+  },
+  null
+]

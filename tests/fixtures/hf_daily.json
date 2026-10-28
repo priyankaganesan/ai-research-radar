@@ -1,0 +1,28 @@
+[
+  {
+    "paper": {
+      "id": "2610.31819",
+      "title": "Speculative Diffusion is a Tale of\n  Two Tradeoffs",
+      "summary": "We study speculative decoding for diffusion language models.  Speedups trade against quality.",
+      "upvotes": 87,
+      "authors": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}],
+      "publishedAt": "2026-10-26T17:59:01.000Z"
+    },
+    "publishedAt": "2026-10-27T01:12:00.000Z",
+    "title": "Speculative Diffusion is a Tale of Two Tradeoffs",
+    "numComments": 3
+  },
+  {
+    "paper": {
+      "id": "2401.10774",
+      "title": "Medusa: Simple LLM Inference Acceleration Framework with Multiple Decoding Heads",
+      "summary": "Large language models use auto-regressive decoding.",
+      "upvotes": 12,
+      "authors": [{"name": "Tianle Cai"}],
+      "publishedAt": "2024-01-19T00:00:00.000Z"
+    }
+  },
+  {
+    "paper": {"id": "not-an-arxiv-id", "title": "Something else", "upvotes": 500}
+  }
+]

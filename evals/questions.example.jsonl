@@ -1,0 +1,2 @@
+{"question": "What is Medusa and how does it speed up LLM decoding?", "expected_ids": ["2401.10774"]}
+{"question": "How do retrieval-augmented models handle conflicts between retrieved text and what the model learned?", "expected_ids": ["REPLACE-WITH-ARXIV-ID"]}

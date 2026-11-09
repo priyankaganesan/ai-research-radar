@@ -33,6 +33,7 @@ class AskResult:
     thread_id: str
     trace: list[dict] = field(default_factory=list)
     passages: list[dict] = field(default_factory=list)
+    verification: list[dict] = field(default_factory=list)
 
 
 def ingest(
@@ -300,6 +301,74 @@ def compare_backends(
     return report
 
 
+DEFAULT_DAYS = {"arxiv": 7, "hf": 3, "labs": 14, "hn": 2}
+
+
+def collect_all(ctx: AppContext) -> list[str]:
+    """Run every source, then Semantic Scholar enrichment. One failing source doesn't stop the
+    rest; it's noted in the returned log instead."""
+    log = []
+    try:
+        fetched, added, used = ingest(ctx, days=DEFAULT_DAYS["arxiv"])
+        log.append(f"arxiv ({used}): fetched {fetched}, added {added}")
+    except SourceUnavailable as e:
+        log.append(f"arxiv: unavailable ({e})")
+    for name, fn in (("hf", ingest_hf), ("labs", ingest_labs), ("hn", ingest_hn)):
+        try:
+            r = fn(ctx, days=DEFAULT_DAYS[name])
+            log.append(f"{name}: fetched {r.fetched}, added {r.added}")
+        except SourceUnavailable as e:
+            log.append(f"{name}: unavailable ({e})")
+    try:
+        r = enrich(ctx)
+        log.append(f"s2 enrich: {r.signals} papers updated")
+    except SourceUnavailable as e:
+        log.append(f"s2 enrich: unavailable ({e})")
+    return log
+
+
+@dataclass
+class DailyResult:
+    date: str
+    path: str
+    picks: list[dict]
+    collect_log: list[str]
+    timings: dict[str, float]
+    stats: dict = field(default_factory=dict)
+    candidates: int = 0
+    notes: list[str] = field(default_factory=list)
+    team_log: list[dict] = field(default_factory=list)
+
+
+def daily(
+    ctx: AppContext,
+    on: date | None = None,
+    collect: bool = True,
+    mode: str | None = None,
+    llm: BaseChatModel | None = None,
+) -> DailyResult:
+    """Run the daily graph and write the digest. mode: "single" (M2) or "multi" (M2.5)."""
+    from radar.graphs.daily import build_daily_graph
+    from radar.models import get_chat_model
+
+    mode = mode or ctx.settings.digest_mode
+    llm = llm or get_chat_model(ctx.settings)  # thinking off: summaries don't need it
+    graph = build_daily_graph(ctx, llm, collect=collect_all if collect else None, mode=mode)
+    on = on or date.today()
+    state = graph.invoke({"date": on.isoformat()}, config={"run_name": f"radar-daily-{mode}"})
+    return DailyResult(
+        date=state["date"],
+        path=state["path"],
+        picks=state["picks"],
+        collect_log=state["collect_log"],
+        timings=state["timings"],
+        stats=state.get("stats", {}),
+        candidates=len(state["candidates"]),
+        notes=state.get("notes", []),
+        team_log=state.get("team_log", []),
+    )
+
+
 class Agent:
     """Holds the compiled Q&A graph so it's built once per process."""
 
@@ -309,11 +378,13 @@ class Agent:
         llm: BaseChatModel | None = None,
         judge: BaseChatModel | None = None,
         checkpointer=None,
+        tools: dict | None = None,
+        verify: bool | None = None,
     ):
         from radar.graphs.qa import build_qa_graph
         from radar.models import get_chat_model
-        from radar.tools import make_tools
 
+        verify = ctx.settings.verify_answers if verify is None else verify
         self.ctx = ctx
         self.llm = llm or get_chat_model(ctx.settings)
         reasoner = None
@@ -325,11 +396,24 @@ class Agent:
         self.graph = build_qa_graph(
             self.llm,
             judge,
-            make_tools(ctx),
+            tools or self._load_tools(),
             max_steps=ctx.settings.max_tool_steps,
             checkpointer=checkpointer,
             reasoner=reasoner,
+            verifier=self.llm if verify else None,
         )
+
+    def _load_tools(self) -> dict:
+        from radar.tools import make_tools
+
+        local = make_tools(self.ctx)
+        if not self.ctx.settings.tools_via_mcp:
+            return local
+        # M1.6 dogfooding: same tools, reached through `radar mcp` over stdio.
+        from radar.mcp_client import MCPToolset
+
+        self.mcp = MCPToolset()
+        return self.mcp.tools(list(local))
 
     def ask(
         self, question: str, thread_id: str | None = None, no_retrieval: bool = False
@@ -349,6 +433,7 @@ class Agent:
             thread_id=thread_id,
             trace=state["trace"],
             passages=state["passages"],
+            verification=state.get("verification", []),
         )
 
 

@@ -33,7 +33,9 @@ class QAState(TypedDict, total=False):
     missing: str
     trace: list[dict]  # human-readable log of each step, for the CLI and the writeup
     answer: str
+    answer_body: str  # the answer without its Sources list, for the verifier
     cited: list[str]
+    verification: list[dict]  # M2.5: the Verifier's verdict on each claim
 
 
 def build_qa_graph(
@@ -43,10 +45,17 @@ def build_qa_graph(
     max_steps: int = 5,
     checkpointer: Any = None,
     reasoner: BaseChatModel | None = None,
+    verifier: BaseChatModel | None = None,
 ):
     """Compile the graph. `llm` rewrites and answers; `judge` checks evidence; `reasoner`
-    (default `llm`) picks tools, so thinking mode can be turned on for that step alone."""
+    (default `llm`) picks tools, so thinking mode can be turned on for that step alone.
+    With `verifier` (M2.5), a Verifier agent checks each claim of the answer after `answer`."""
     llm_with_tools = (reasoner or llm).bind_tools(list(tools.values()))
+    verifier_graph = None
+    if verifier is not None:
+        from radar.graphs.agents.verifier import build_verifier
+
+        verifier_graph = build_verifier(verifier)
 
     def prepare(state: QAState) -> dict:
         last = next(m for m in reversed(state["messages"]) if isinstance(m, HumanMessage))
@@ -60,7 +69,9 @@ def build_qa_graph(
             "missing": "",
             "trace": [],
             "answer": "",
+            "answer_body": "",
             "cited": [],
+            "verification": [],
         }
 
     def rewrite_query(state: QAState) -> dict:
@@ -169,13 +180,56 @@ def build_qa_graph(
         if not cited:
             # An answer with no citations isn't grounded; treat it as unsupported.
             return abstain({**state, "missing": "the answer could not be tied to any passage"})
-        by_id = {p["item_id"]: p for p in state["passages"]}
-        sources = "\n".join(
-            f"[{i}] {by_id[i]['title']} ({by_id[i]['published']}) {by_id[i]['url']}" for i in cited
-        )
-        full = f"{text}\n\nSources:\n{sources}"
+        full = with_sources(text, cited, state["passages"])
         trace = state["trace"] + [{"step": "answer", "cited": cited}]
-        return {"messages": [AIMessage(full)], "answer": full, "cited": cited, "trace": trace}
+        return {
+            "messages": [AIMessage(full)],
+            "answer": full,
+            "answer_body": text,
+            "cited": cited,
+            "trace": trace,
+        }
+
+    def verify(state: QAState) -> dict:
+        """M2.5: drop sentences the cited passages don't support; the trace says which."""
+        if not state.get("cited"):
+            return {}  # abstained: nothing to check
+        from langchain_core.messages import RemoveMessage
+
+        from radar.graphs.agents.verifier import remove_claims, unsupported
+
+        out = verifier_graph.invoke({"text": state["answer_body"], "passages": state["passages"]})
+        bad = unsupported(out["results"])
+        trace = state["trace"] + [
+            {
+                "step": "verify",
+                "claims": len(out["results"]),
+                "unsupported": [{"claim": r["claim"], "why": r["why"]} for r in bad],
+            }
+        ]
+        if not bad:
+            return {"verification": out["results"], "trace": trace}
+        body, cited = keep_valid_citations(
+            remove_claims(state["answer_body"], bad), state["passages"]
+        )
+        last = state["messages"][-1]
+        if not cited:
+            reply = abstain(
+                {**state, "missing": "the verifier found the answer's claims unsupported"}
+            )
+            reply["messages"] = [RemoveMessage(id=last.id), *reply["messages"]]
+            return {**reply, "verification": out["results"], "trace": trace + reply["trace"][-1:]}
+        note = f"\n\n(Removed {len(bad)} claim(s) the sources didn't support.)"
+        full = with_sources(body + note, cited, state["passages"])
+        return {
+            # replace the answer in the conversation history too
+            "messages": [RemoveMessage(id=last.id), AIMessage(full)],
+            "answer": full,
+            "answer_body": body,
+            "cited": cited,
+            "verification": out["results"],
+            "trace": trace,
+        }
 
     def abstain(state: QAState) -> dict:
         lines = [
@@ -203,9 +257,22 @@ def build_qa_graph(
     g.add_edge("reason", "tools")
     g.add_edge("tools", "evidence_check")
     g.add_conditional_edges("evidence_check", route, ["answer", "reason", "abstain"])
-    g.add_edge("answer", END)
+    if verifier is not None:
+        g.add_node("verify", verify)
+        g.add_edge("answer", "verify")
+        g.add_edge("verify", END)
+    else:
+        g.add_edge("answer", END)
     g.add_edge("abstain", END)
     return g.compile(checkpointer=checkpointer)
+
+
+def with_sources(text: str, cited: list[str], passages: list[dict]) -> str:
+    by_id = {p["item_id"]: p for p in passages}
+    sources = "\n".join(
+        f"[{i}] {by_id[i]['title']} ({by_id[i]['published']}) {by_id[i]['url']}" for i in cited
+    )
+    return f"{text}\n\nSources:\n{sources}"
 
 
 def _thought(msg) -> str:

@@ -197,11 +197,15 @@ def ask(
     no_retrieval: bool = typer.Option(False, "--no-retrieval", help="Answer without tools."),
     thread: str | None = typer.Option(None, help="Conversation ID, to ask a follow-up."),
     show_steps: bool = typer.Option(False, "--steps", help="Print each step of the loop."),
+    verify: bool | None = typer.Option(
+        None, "--verify/--no-verify", help="Check each claim with the Verifier agent (M2.5)."
+    ),
 ) -> None:
     """Ask a question, answered from the store with citations."""
     from radar import services
 
-    result = services.Agent(_ctx()).ask(question, thread_id=thread, no_retrieval=no_retrieval)
+    agent = services.Agent(_ctx(), verify=verify)
+    result = agent.ask(question, thread_id=thread, no_retrieval=no_retrieval)
     if show_steps:
         for t in result.trace:
             typer.secho(f"  {t}", fg=typer.colors.BRIGHT_BLACK)
@@ -215,9 +219,55 @@ def ask(
 
 
 @app.command()
-def daily() -> None:
+def mcp(
+    http: bool = typer.Option(False, "--http", help="Serve streamable HTTP on localhost."),
+    port: int = typer.Option(8765, help="Port for --http."),
+) -> None:
+    """Run the MCP server (stdio by default) so MCP clients can use Radar's tools."""
+    from radar.mcp_server import run
+
+    run(http=http, port=port)
+
+
+@app.command()
+def daily(
+    no_collect: bool = typer.Option(
+        False, "--no-collect", help="Skip fetching; build the digest from the store as it is."
+    ),
+    on: str | None = typer.Option(None, "--date", help="Digest date, YYYY-MM-DD (default today)."),
+    mode: str | None = typer.Option(None, help="single (one summarize step) or multi (agents)."),
+) -> None:
     """Run the daily pipeline and write today's digest."""
-    _todo("M2")
+    from datetime import date
+
+    from radar import services
+
+    if mode not in (None, "single", "multi"):
+        typer.echo("--mode must be single or multi.")
+        raise typer.Exit(code=1)
+    if not no_collect:
+        typer.echo("Collecting from all sources (this takes a few minutes)...")
+    result = services.daily(
+        _ctx(),
+        on=date.fromisoformat(on) if on else None,
+        collect=not no_collect,
+        mode=mode,
+    )
+    for line in result.collect_log:
+        typer.echo(f"  {line}")
+    typer.echo(f"\n{result.candidates} candidates -> {len(result.picks)} picks:")
+    for n, p in enumerate(result.picks, 1):
+        typer.echo(f"{n}. [{p['slot']}] {p['title']} ({p['item_id']})")
+        typer.secho(f"   {p['reason']}", fg=typer.colors.BRIGHT_BLACK)
+        if p.get("concerns"):
+            typer.secho(f"   critic: {p['concerns']}", fg=typer.colors.YELLOW)
+    for note in result.notes:
+        typer.secho(f"  * {note}", fg=typer.colors.YELLOW)
+    if result.stats:
+        typer.secho(f"Agents: {result.stats}", fg=typer.colors.BRIGHT_BLACK)
+    timing = ", ".join(f"{k} {v}s" for k, v in result.timings.items())
+    typer.secho(f"\nTimings: {timing}", fg=typer.colors.BRIGHT_BLACK)
+    typer.echo(f"Digest written to {result.path}")
 
 
 @app.command()
@@ -267,6 +317,37 @@ def compare_backends(
     except ValueError as e:
         typer.echo(str(e))
         raise typer.Exit(code=1) from None
+    typer.echo(report["markdown"])
+    typer.echo(f"Saved to {report['path']}")
+
+
+@app.command("compare-agents")
+def compare_agents(
+    on: str | None = typer.Option(None, "--date", help="Digest date, YYYY-MM-DD (default today)."),
+    file: Path | None = typer.Option(
+        None, help="Optional JSONL of questions to also compare Q&A with and without the Verifier."
+    ),
+    limit: int = typer.Option(5, help="Max questions from the file."),
+) -> None:
+    """Single- vs. multi-agent: claim support, model calls and time (M2.5). Slow: ~20 min."""
+    import json
+    from datetime import date
+
+    from radar import evals_agents
+    from radar.models import get_chat_model
+
+    ctx = _ctx()
+    questions = []
+    if file is not None:
+        rows = [json.loads(x) for x in file.read_text().splitlines() if x.strip()]
+        questions = [r["question"] for r in rows][:limit]
+    typer.echo("Building the digest twice (single, then multi) and judging every claim...")
+    report = evals_agents.compare(
+        ctx,
+        date.fromisoformat(on) if on else date.today(),
+        get_chat_model(ctx.settings),
+        questions=questions,
+    )
     typer.echo(report["markdown"])
     typer.echo(f"Saved to {report['path']}")
 

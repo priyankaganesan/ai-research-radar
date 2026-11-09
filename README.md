@@ -39,8 +39,49 @@ uv run radar ask "..." --no-retrieval  # same model, no tools: the comparison ba
 uv run radar eval --file evals/questions.jsonl   # retrieval recall@5
 uv run radar reindex --backend lance [--ann]  # copy vectors into LanceDB (optional IVF-PQ index)
 uv run radar compare-backends                  # sqlite-vec vs. LanceDB: recall, latency, disk
+uv run radar daily                    # collect, rank, summarize: data/digests/YYYY-MM-DD.md
+uv run radar daily --no-collect       # build the digest from the store as it is (fast)
+uv run radar daily --mode multi       # Critic, Writer and Verifier agents write the digest
+uv run radar ask "..." --verify       # the Verifier agent checks each claim of the answer
+uv run radar compare-agents           # single vs. multi-agent: claim support and time
+uv run radar mcp                      # MCP server over stdio (see below)
 uv run pytest             # tests (never call Ollama or the network)
 uv run ruff check .       # lint
 ```
 
-`daily`, `rate` and `watchlist` are stubs until their milestones land.
+`rate` and `watchlist` are stubs until their milestones land.
+
+## Use Radar from Claude Code or Claude Desktop (MCP)
+
+`radar mcp` is an MCP server. It offers `store_search`, `search_arxiv`,
+`semantic_scholar_lookup`, `get_item` and `ask`, the resources `radar://digest/latest` and
+`radar://stats`, and the prompt `explain_paper`.
+
+Claude Code (VS Code extension or CLI) picks up the project's `.mcp.json` automatically: reload
+the window, approve the `radar` server, and check it with `/mcp`. If `uv` isn't at
+`~/.local/bin/uv` on your machine, put the output of `which uv` in its `command`.
+
+```bash
+# Claude Code CLI, as an alternative to .mcp.json
+claude mcp add radar -- uv run --directory /Users/Sindhu/cmu/ai_research_radar radar mcp
+
+# Inspect it by hand in a browser
+npx @modelcontextprotocol/inspector uv run --directory /Users/Sindhu/cmu/ai_research_radar radar mcp
+```
+
+Claude Desktop: add this to `~/Library/Application Support/Claude/claude_desktop_config.json`
+(use the full path to `uv`, e.g. from `which uv`):
+
+```json
+{
+  "mcpServers": {
+    "radar": {
+      "command": "/Users/Sindhu/.local/bin/uv",
+      "args": ["run", "--directory", "/Users/Sindhu/cmu/ai_research_radar", "radar", "mcp"]
+    }
+  }
+}
+```
+
+Set `TOOLS_VIA_MCP=true` in `.env` and `radar ask` loads its own tools through this server
+instead of importing them. Answers are the same; it shows the protocol end to end.

@@ -44,6 +44,22 @@ class Settings(BaseSettings):
     # Thinking mode for the reason step: shows Qwen's reasoning in --steps, but each step is slower.
     reason_thinking: bool = False
     retrieval_k: int = 5
+    # Daily digest (M2)
+    # Seed interests for the relevance score, until ratings (M4) refine the profile.
+    interest_topics: str = (
+        "LLM agents and tool use,retrieval-augmented generation,reasoning in language models,"
+        "efficient LLM inference,evaluation of language models"
+    )
+    digest_window_days: int = 7  # candidates: items published in the last N days
+    digest_main: int = 6
+    digest_reserved: int = 2  # early-buzz + lab-launch slots
+    digest_dir: Path = Path("data/digests")
+    digest_mode: Literal["single", "multi"] = "single"  # multi = M2.5 agents
+    # M2.5: run the Verifier agent on every Q&A answer (one more model call per question).
+    verify_answers: bool = False
+
+    # M1.6: load the Q&A tools from Radar's own MCP server instead of importing them.
+    tools_via_mcp: bool = False
 
 
 @lru_cache

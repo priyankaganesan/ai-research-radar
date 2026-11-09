@@ -11,11 +11,12 @@ The plan for the whole codebase. `CLAUDE.md` holds the rules and design; this fi
 | M1.5 | Second vector backend | `VECTOR_BACKEND=lance` runs the same Q&A on LanceDB; eval compares exact (sqlite-vec) vs. approximate (LanceDB) search on recall@5, latency and disk | M1 |
 | M1.6 | MCP server (required) | `radar mcp` exposes the store and search tools over MCP; Claude Desktop / Claude Code can search the research store; the Q&A graph can load its tools through MCP | M1 |
 | M2 | Daily pipeline | `radar daily` writes a ranked 8-item digest from arXiv | M1 |
+| M2.5 | Multi-agent digest and verification | The digest's `summarize` step becomes Critic → Writer → Verifier agents under a supervisor; Q&A gets the same Verifier for claim-level checks; eval compares single- vs. multi-agent on quality and time | M2 |
 | M3 | More sources | Hugging Face upvotes, Semantic Scholar citations and TLDRs, lab RSS, Hacker News feed into scoring. Collection built first (before M2) so the data is queryable; scoring uses it in M2 | M2 |
-| M4 | Long-term memory and feedback | Ratings update the profile, reserved slots, early-buzz watchlist re-checks, gap logging | M2, M3 |
+| M4 | Long-term memory and feedback | Ratings update the profile, reserved slots, early-buzz watchlist re-checks, gap logging; a Profile agent turns ratings and gaps into interest updates (uses M2.5's agent pattern) | M2, M3, M2.5 |
 | M5 | Going deeper | Full-text fetch and section chunking when a paper gets repeated questions | M1 |
 | M7 | FastAPI web UI | `radar serve` opens a local web app: ask with streamed answers and citations, browse and rate the digest, search the store, watchlist | M2, M4 (build before recording the presentation) |
-| M6 | Evals and polish | LangSmith eval suite, model comparisons, scheduled runs, graph diagrams, demo script. Stretch: a pgvector backend | all |
+| M6 | Evals and polish | LangSmith eval suite, model comparisons, scheduled runs, graph diagrams, demo script. Stretch 1: a pgvector backend. Stretch 2: full cloud pipeline (see Stretch goals) | all |
 
 M3 and M5 are independent of each other; do whichever the next assignment needs first. M1.5 is for learning: it exists to compare two vector stores, not because the agent needs two. M7 comes after M4 because the UI is most useful once there's a digest to rate, and before M6 so the presentation can demo it.
 
@@ -103,9 +104,10 @@ M3 (built, `003_sources.sql`):
 - `signals(item_id, date, hf_upvotes, citations, influential_citations, hn_points, hn_comments)`: one row per item per day, so attention over time is visible; each source fills only its own columns (upsert with COALESCE). Citation velocity is computed in M2 from the change between rows.
 - Item IDs: arXiv ID for papers (HF, S2 and HN-linked papers merge with arXiv ones), `post:<sha1 of link>` for lab posts, `hn:<story id>` for other HN stories, `s2:<paperId>` for S2 papers with no arXiv ID.
 
-M2:
-- `digests(date, paper_id, rank, slot TEXT 'main'|'early_buzz'|'lab_launch', score, reason)`
-- `summaries(paper_id, text, model, created_at)`
+M2 (built, `004_digest.sql`):
+- `digests(date, item_id, rank, slot TEXT 'main'|'early_buzz'|'lab_launch', score, reason)`
+- `summaries(item_id, mode 'single'|'multi', text, model, created_at)`: one per writer, so M2 and M2.5 summaries can be compared
+- `profile(key, value JSON)`: created now (empty = defaults: `INTEREST_TOPICS`, default weights, 2 reserved slots); M4 ratings write to it
 
 M4:
 - `ratings(paper_id, date, value TEXT 'useful'|'not_relevant'|'skipped')`
@@ -141,15 +143,14 @@ The LangGraph checkpointer gets its own file (`data/checkpoints.db`) so short-te
 MCP (Model Context Protocol) is the standard way for AI apps to discover and call tools. Radar's tools are defined once in `tools/` and exposed two ways: as LangChain tools inside the agent, and as an MCP server any MCP client can use.
 
 - Built with the official `mcp` Python SDK (`FastMCP`), **stdio** transport by default (the client launches `radar mcp` as a subprocess); optional `--http` for streamable HTTP on localhost.
-- **Tools:**
-  - `search_store(query, k=5, kind=None, since=None)`: hybrid retrieval, returns passages with IDs, links and dates
-  - `get_item(item_id)`: full record plus summary
-  - `search_arxiv(query, max_results=10, add_to_store=False)`: live search; writing to the store only when asked
-  - `ask(question)`: runs the full Q&A graph on local Qwen and returns the cited answer
-- **Resources:** `radar://digest/latest` (today's digest), `radar://watchlist`
+- **Tools** (built 2026-11-07):
+  - `store_search`, `search_arxiv`, `semantic_scholar_lookup`: the agent's own LangChain tools from `tools/`, converted with `langchain_mcp_adapters.tools.to_fastmcp`, so they're defined once. (Names follow the agent tools rather than the earlier `search_store` draft.)
+  - `get_item(item_id)`: full record plus TLDR and latest signals
+  - `ask(question, thread_id=None)`: runs the full Q&A graph on local Qwen and returns the cited answer
+- **Resources:** `radar://digest/latest` (newest file in `data/digests/`), `radar://stats`. `radar://watchlist` comes with M4.
 - **Prompts:** `explain_paper(item_id)`: a ready-made prompt template
-- **Read-only by default.** Tools that write (`add_to_store=True`) say so in their description, so clients can ask the user first.
-- **Dogfooding:** a setting `TOOLS_VIA_MCP=true` makes the Q&A graph load its tools from the MCP server with `langchain-mcp-adapters`, instead of importing them directly. Same behavior, but it shows the protocol end to end.
+- **Writes are labelled.** The live-search tools save what they find to the store (the Q&A loop relies on that), so they carry the MCP annotation `readOnlyHint=false` and say so in their title; clients can ask the user first. The other tools are marked read-only.
+- **Dogfooding:** a setting `TOOLS_VIA_MCP=true` makes the Q&A graph load its tools from the MCP server with `langchain-mcp-adapters`, instead of importing them directly. Same behavior, but it shows the protocol end to end. `mcp_client.py` keeps the async MCP session on a background event loop and gives the sync graph thin sync wrappers.
 - **Client setup** goes in the README: `claude mcp add radar -- uv run --directory /Users/Sindhu/cmu/ai_research_radar radar mcp`, plus the matching `claude_desktop_config.json` entry.
 - **Testing:** an in-memory MCP client session lists the tools and calls `search_store` against a temp store with fake embeddings. Inspect manually with the MCP Inspector (`npx @modelcontextprotocol/inspector`).
 - Logs go to stderr only. On stdio, stdout is the protocol channel, so a stray `print` breaks it.
@@ -183,6 +184,15 @@ START → rewrite_query → reason ──tool call──▶ tools ──▶ evid
 
 ## Daily graph (M2)
 
+Built 2026-11-07 as:
+```
+START → collect → candidates → score → pick → summarize → render → END      (recheck_watchlist: M4)
+```
+- `collect` runs every source and then Semantic Scholar enrich (`services.collect_all`), so `enrich` is folded in. `radar daily --no-collect` skips it.
+- `candidates` is the dedupe step: the store already merges duplicate IDs across sources, so this drops items shown in an earlier digest and keeps items published in the last `DIGEST_WINDOW_DAYS` (7). HN stories without a paper are candidates too.
+- Each node records its wall-clock time in `timings`, for the single vs. multi-agent comparison.
+
+Original sketch:
 ```
 START → collect → dedupe → enrich → score → pick → summarize → render → recheck_watchlist → END
 ```
@@ -193,6 +203,30 @@ START → collect → dedupe → enrich → score → pick → summarize → ren
 - `summarize`: the only LLM step. Qwen summarizes the 8 picks, with thinking off.
 - `render`: writes `data/digests/YYYY-MM-DD.md`, with each item's label and one-line reason.
 - `recheck_watchlist` (M4): papers past `recheck_after` are re-scored on citations and marked established or dropped.
+
+## Multi-agent digest and verification (M2.5)
+
+Rule: an agent is a step that needs its own role, prompt and tools. Anything deterministic (collect, dedupe, score, pick, render) stays a plain code node. Every agent is the same local Qwen with a different prompt; Ollama runs one call at a time, so each agent adds 10-30 s and must earn its place.
+
+```
+daily graph:  ... → score → pick → supervisor ──▶ critic ──▶ writer ──▶ verifier ──▶ render
+                                       ▲                                   │
+                                       └──── unsupported claims, retries<2 ┘
+```
+- `critic` (agent): reads each candidate's abstract and TLDR and judges methods and relevance to the profile: `{keep: bool, concerns: str}`. A dropped pick is replaced by the next by score. Answers Checkpoint 2 feedback "popularity is not quality".
+- `writer` (agent): the old `summarize` step; 2-3 sentence summary per pick with `[paper_id]` citations.
+- `verifier` (agent, shared with Q&A): splits each summary into claims and checks each against the cited passage: `{claim, supported: bool, why}`. Unsupported claims go back to the writer with the reason; after 2 retries the claim is cut. Answers feedback "check claims are supported by their source".
+- `supervisor`: a LangGraph router (code, not an LLM) that sends work to the next agent and enforces the retry limit. Each agent is a subgraph in `graphs/agents/`, so it can be tested alone with a fake LLM.
+- Q&A: after `answer`, the same `verifier` runs; unsupported sentences are removed or marked, and the trace shows why.
+- Eval: run the same questions and a week of digests single-agent (M2) and multi-agent; compare claim support rate, critic agreement with your ratings, and wall-clock time. Report the trade-off either way.
+- Exploration hook: LangGraph's prebuilt supervisor / handoff tools vs. the hand-written router.
+
+Built 2026-11-07:
+- `graphs/agents/critic.py`, `writer.py`, `verifier.py` (one subgraph each) and `team.py` (the supervisor graph). `DIGEST_MODE=multi` or `radar daily --mode multi` swaps the team in for `summarize`.
+- Limits: 2 rewrites per item (`MAX_RETRIES`), at most 3 critic drops per digest (`MAX_DROPS`, so the critic can't empty it); a dropped pick is replaced by the next item by score, in the same position, and also meets the critic. An unreadable critic verdict keeps the item.
+- The verifier splits claims in code (one sentence = one claim) and judges all claims of a text in one call; a claim with no verdict counts as unverified, not unsupported.
+- Q&A: `VERIFY_ANSWERS=true` or `radar ask --verify` adds a `verify` node after `answer`; unsupported sentences are removed (with a note), and if none survive the graph abstains.
+- `radar compare-agents [--date D] [--file questions.jsonl]` builds the same day's digest in both modes and judges every final claim with a fresh verifier pass; writes `evals/results/agents-*.md`. Critic agreement with ratings waits for M4.
 
 ## Scoring (M2, tuned in M4)
 
@@ -216,12 +250,13 @@ radar enrich [--days 30] [--limit 500]                     # M3: S2 citations + 
 radar show ITEM_ID                                         # M3: one item, its TLDR and signals
 radar search "query" [--k 5] [--since YYYY-MM-DD]          # M1 (retrieval only, no LLM)
 radar ask "question" [--no-retrieval] [--thread ID] [--steps]  # M1
-radar daily                                                # M2
 radar rate PAPER_ID useful|not_relevant|skipped            # M4
 radar watchlist                                            # M4
 radar reindex --backend sqlite|lance [--ann]               # M1.5
 radar compare-backends [--file F] [--k 5] [--sample 50]    # M1.5
 radar mcp [--http]                                         # M1.6
+radar daily [--mode single|multi] [--no-collect] [--date D]  # M2, M2.5
+radar compare-agents [--date D] [--file F]                 # M2.5
 radar serve [--port 8000]                                  # M7
 radar eval [--model ...] [--embed-model ...] [--backend ...]  # M1 basic, M6 full
 ```
@@ -283,7 +318,18 @@ Each one plugs into an existing seam and has something measurable to compare. Qw
 | Arize Phoenix (local OpenTelemetry tracing) | alongside LangSmith | local vs. cloud tracing | after M1 |
 | Prefect or Dagster | daily graph scheduling | retries, logs, UI vs. launchd | M6 |
 | Streamlit or Gradio | `services.py` peer | quick-prototype UI vs. the FastAPI app (M7) | after M7 |
-| pgvector | `VectorIndex` third backend | vs. sqlite-vec and LanceDB | M6 stretch |
+| pgvector | `VectorIndex` third backend | vs. sqlite-vec and LanceDB | M6 stretch 1 |
+
+## Stretch goals (M6)
+
+1. **pgvector backend.** A third `VectorIndex` backend on Postgres + pgvector, compared with sqlite-vec and LanceDB through `radar compare-backends`.
+2. **Full cloud pipeline** (builds on 1). The daily ingest runs while the laptop is off:
+   - A GitHub Actions workflow with a daily cron runs `radar ingest all` on GitHub's machines.
+   - The same job installs Ollama and runs `qwen3-embedding:0.6b` on the runner's CPU, so vectors match the ones made on the Mac. It's an open model running inside the job, not a cloud LLM API.
+   - Items, signals and vectors go to hosted Postgres + pgvector (for example the Neon or Supabase free tier). Keyword search moves from SQLite FTS5 to Postgres full-text search (`tsvector`), so hybrid RRF retrieval keeps working.
+   - The Mac's agent queries the hosted store over the network; Qwen still answers locally.
+   - Needs one GitHub secret (the database URL). The schedule only reads public sources.
+   - Considered and set aside for now (2026-10-28): cloud collects into Postgres while the Mac embeds via `radar sync`, and a local launchd schedule.
 
 ## Open decisions
 

@@ -42,9 +42,9 @@ def test_init_db(tmp_path):
 
 
 def test_unbuilt_commands_say_so():
-    result = runner.invoke(app, ["daily"])
+    result = runner.invoke(app, ["rate", "x", "useful"])
     assert result.exit_code == 1
-    assert "M2" in result.output
+    assert "M4" in result.output
 
 
 def test_search_on_empty_store(monkeypatch):

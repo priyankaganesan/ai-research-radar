@@ -62,3 +62,67 @@ def format_passages(passages: list[dict], max_chars: int = 1200) -> str:
         f"[{p['item_id']}] {p['title']} ({p['published']})\n{p['text'][:max_chars]}"
         for p in passages
     )
+
+
+# ---- Daily digest (M2) ----
+
+SUMMARIZE = """Summarize this item for a busy ML practitioner in 2-3 sentences: what problem it \
+tackles, the key idea, and the main result or claim. Use only the text below. End each sentence \
+with the citation [{item_id}].
+
+Title: {title}
+Abstract: {abstract}
+TLDR (Semantic Scholar): {tldr}"""
+
+
+# ---- Multi-agent digest and verification (M2.5) ----
+
+CRITIC = """You are the Critic on a daily AI research digest team. A scoring formula already \
+ranked items by relevance, popularity and recency. Your job is to catch items that ranked high \
+but don't deserve a slot: off-topic for this reader, or popular but weak.
+
+Reader's interests: {topics}
+
+Item: {item_id} ({kind}, slot: {slot})
+Why it ranked: {reason}
+Title: {title}
+Abstract: {abstract}
+TLDR (Semantic Scholar): {tldr}
+
+Judge two things:
+1. Relevance: would this reader want to read it?
+2. Substance (papers only): does the abstract describe a concrete method and evaluation, or is \
+it vague, hype or only a position? For blog posts and news, judge relevance only.
+Popularity alone is not a reason to keep an item.
+
+Reply with JSON only:
+{{"keep": true or false, "concerns": "one short sentence, or empty if none"}}"""
+
+WRITER = """You are the Writer on a daily AI research digest team. Summarize this item for a \
+busy ML practitioner in 2-3 sentences: the problem, the key idea, and the main result. Use only \
+the text below; don't add numbers or claims it doesn't contain. End each sentence with the \
+citation [{item_id}].
+
+Title: {title}
+Abstract: {abstract}
+TLDR (Semantic Scholar): {tldr}
+{feedback}"""
+
+WRITER_FEEDBACK = """
+Your previous draft had claims the source does not support. Rewrite without them, or state \
+them only as far as the text supports:
+{problems}"""
+
+VERIFIER = """You are the Verifier. Check each numbered claim against the source passages. A \
+claim is supported only if the passages state it or directly imply it. Background knowledge \
+doesn't count; a claim that adds a number, a comparison or a result the passages don't give is \
+unsupported.
+
+Passages:
+{passages}
+
+Claims:
+{claims}
+
+Reply with JSON only, one entry per claim:
+[{{"n": 1, "supported": true or false, "why": "short reason"}}]"""

@@ -14,6 +14,7 @@ TODAY = date(2026, 10, 22)
 
 
 def _fill(ctx):
+    ctx.settings.digest_min_text_chars = 0  # the sample abstracts are one short sentence
     papers = [
         make_item(f"2410.1000{i}", f"Agent paper {i}", f"LLM agents and tool use, idea {i}.")
         for i in range(8)
@@ -72,3 +73,26 @@ def test_citation_velocity_uses_change_between_readings(ctx):
     _fill(ctx)
     assert citation_velocity(ctx, "2410.10001", age_days=2) == 5.0  # 10 more in 2 days
     assert citation_velocity(ctx, "2410.10000", age_days=2) == 0.0
+
+
+def test_title_only_stories_are_not_candidates(ctx):
+    from radar.graphs.daily import load_candidates, substance
+
+    hn_abstract = "Closed AI models win. Discussed on Hacker News (77 points, 12 comments)."
+    assert substance("Closed AI models win", hn_abstract) == ""
+    long_text = "A real paper abstract with a method and results. " * 6
+    items = [
+        Item(
+            id="hn:1",
+            source="hn",
+            kind="post",
+            title="Closed AI models win",
+            abstract=hn_abstract,
+            published=date(2026, 10, 21),
+            url="https://x",
+        ),
+        make_item("2410.30000", "Real paper", long_text, "2026-10-21"),
+    ]
+    index_items(ctx.conn, ctx.embeddings, ctx.vectors, items)
+    ids = {f.item_id for f in load_candidates(ctx, TODAY, 7)}
+    assert ids == {"2410.30000"}

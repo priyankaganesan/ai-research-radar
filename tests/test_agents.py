@@ -175,6 +175,7 @@ def test_daily_multi_mode_end_to_end(ctx, tmp_path, monkeypatch):
     from radar.rag.index import index_items
 
     monkeypatch.setattr(ctx.settings, "digest_dir", tmp_path / "digests")
+    ctx.settings.digest_min_text_chars = 0
     papers = [make_item(f"2410.1000{i}", f"Agent paper {i}", "LLM agents.") for i in range(9)]
     index_items(ctx.conn, ctx.embeddings, ctx.vectors, papers)
     llm = RoleFake(drop={"Agent paper 0"}, prompts=[])
@@ -239,6 +240,7 @@ def test_compare_agents_report(ctx, tmp_path):
     from radar import evals_agents
     from radar.rag.index import index_items
 
+    ctx.settings.digest_min_text_chars = 0
     papers = [make_item(f"2410.1000{i}", f"Agent paper {i}", "LLM agents.") for i in range(9)]
     index_items(ctx.conn, ctx.embeddings, ctx.vectors, papers)
     llm = RoleFake(drop={"Agent paper 0"}, prompts=[])
@@ -248,3 +250,16 @@ def test_compare_agents_report(ctx, tmp_path):
     assert report["digest"]["multi"]["support_rate"] == 1.0
     assert "| Claim support" in report["markdown"]
     assert Path(report["path"]).exists()
+
+
+def test_dropped_pick_is_replaced_only_from_its_own_slot():
+    lab = {**item(1), "slot": "lab_launch", "title": "Lab post"}
+    spare_main = {**item(2), "slot": "main"}
+    spare_lab = {**item(3), "slot": "lab_launch", "title": "Other lab post"}
+    llm = RoleFake(drop={"Lab post"}, prompts=[])
+    out = _run_team(llm, [lab], [spare_main, spare_lab])
+    assert [d["item_id"] for d in out["done"]] == ["2410.00003"]
+    # no back-up for the slot: the pick stays, with the critic's concerns
+    out = _run_team(RoleFake(drop={"Lab post"}, prompts=[]), [lab], [spare_main])
+    assert out["done"][0]["item_id"] == "2410.00001"
+    assert out["done"][0]["concerns"] == "weak"

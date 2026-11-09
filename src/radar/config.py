@@ -51,6 +51,9 @@ class Settings(BaseSettings):
         "efficient LLM inference,evaluation of language models"
     )
     digest_window_days: int = 7  # candidates: items published in the last N days
+    # Candidates need this much real text beyond the title (title-only HN stories can't be
+    # summarized or judged).
+    digest_min_text_chars: int = 200
     digest_main: int = 6
     digest_reserved: int = 2  # early-buzz + lab-launch slots
     digest_dir: Path = Path("data/digests")

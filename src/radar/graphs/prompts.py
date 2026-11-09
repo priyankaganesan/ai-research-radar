@@ -90,10 +90,15 @@ Abstract: {abstract}
 TLDR (Semantic Scholar): {tldr}
 
 Judge two things:
-1. Relevance: would this reader want to read it?
+1. Relevance: is it about one of the reader's interests? Judge by topic, not by format: a lab \
+blog post or research note on an interest counts as much as a paper. Read the interests \
+broadly: faster decoding, drafting, quantization, smaller or cheaper models, serving and \
+running models on modest hardware all count as efficient inference; memory, planning and tool \
+use count as agents.
 2. Substance (papers only): does the abstract describe a concrete method and evaluation, or is \
-it vague, hype or only a position? For blog posts and news, judge relevance only.
-Popularity alone is not a reason to keep an item.
+it vague, hype or only a position? For blog posts, judge relevance only.
+Business, funding, pricing and customer stories are not research: drop them.
+Popularity alone is not a reason to keep an item. Drop only when you are fairly sure.
 
 Reply with JSON only:
 {{"keep": true or false, "concerns": "one short sentence, or empty if none"}}"""

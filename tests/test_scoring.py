@@ -68,3 +68,24 @@ def test_missing_reserved_candidates_go_to_main():
 def test_mean_vector_and_cosine():
     v = scoring.mean_vector([[1.0, 0.0], [0.0, 2.0]])
     assert abs(scoring.cosine(v, [1.0, 1.0]) - 1.0) < 1e-9
+
+
+def test_customer_stories_are_not_lab_launches():
+    pool = [
+        feat(
+            "post:story",
+            kind="post",
+            source="lab:OpenAI",
+            relevance=0.9,
+            title="Merge builds product tools with OpenAI technology",
+        ),
+        feat(
+            "post:launch",
+            kind="post",
+            source="lab:OpenAI",
+            relevance=0.3,
+            title="Introducing a new reasoning model",
+        ),
+    ]
+    picks = scoring.pick(scoring.score_all(pool), n_main=0, reserved=2)
+    assert [p.scored.features.item_id for p in picks if p.slot == "lab_launch"] == ["post:launch"]

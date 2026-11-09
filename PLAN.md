@@ -191,6 +191,7 @@ START → collect → candidates → score → pick → summarize → render →
 - `collect` runs every source and then Semantic Scholar enrich (`services.collect_all`), so `enrich` is folded in. `radar daily --no-collect` skips it.
 - `candidates` is the dedupe step: the store already merges duplicate IDs across sources, so this drops items shown in an earlier digest and keeps items published in the last `DIGEST_WINDOW_DAYS` (7). HN stories without a paper are candidates too.
 - Each node records its wall-clock time in `timings`, for the single vs. multi-agent comparison.
+- 2026-11-09, after reviewing the first real digests: candidates need at least `DIGEST_MIN_TEXT_CHARS` (200) of text beyond the title, so title-only HN stories no longer take slots (their points still boost linked papers); the lab-launch slot skips customer stories ("X builds ... with OpenAI"); a pick the Critic drops is replaced only by an item that fits the same slot, or kept with its concerns.
 
 Original sketch:
 ```

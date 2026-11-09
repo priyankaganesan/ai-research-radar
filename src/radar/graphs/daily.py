@@ -15,6 +15,7 @@ calls Qwen. Everything else is plain code, so it's fast, testable and the same e
 - render:     write the Markdown file and the `digests` rows.
 """
 
+import re
 import struct
 import time
 from collections.abc import Callable
@@ -94,19 +95,19 @@ def build_daily_graph(
         ]
         return {"picks": rows}
 
-    def load_reserve(state: DailyState, n: int = 10) -> list[dict]:
-        """The next items by score after the picks, for the Critic to fall back on."""
+    def load_reserve(state: DailyState, n: int = 6) -> list[dict]:
+        """Back-ups for the Critic, per slot: the next items that fit each slot the picks use.
+        A dropped lab launch is replaced by another lab post, not by whatever scores next."""
         chosen = {p["item_id"] for p in state["picks"]}
+        scored = [_scored_from(d) for d in state["scored"]]
         out = []
-        for d in state["scored"]:
-            if len(out) >= n:
-                break
-            if d["features"]["item_id"] in chosen:
-                continue
-            sc = _scored_from(d)
-            out.append(
-                item_row(ctx, sc.features.item_id, "main", sc.total, scoring.explain(sc, "main"))
-            )
+        for slot in dict.fromkeys(p["slot"] for p in state["picks"]):
+            spare = [
+                x for x in scoring.slot_candidates(scored, slot) if x.features.item_id not in chosen
+            ][:n]
+            for x in spare:
+                fid = x.features.item_id
+                out.append(item_row(ctx, fid, slot, x.total, scoring.explain(x, slot)))
         return out
 
     if summarize is None and mode == "multi":
@@ -168,10 +169,16 @@ def load_candidates(ctx: AppContext, today: date, window_days: int) -> list[scor
     since = date.fromordinal(today.toordinal() - window_days).isoformat()
     shown = digest_store.featured_before(ctx.conn, today.isoformat())
     rows = ctx.conn.execute(
-        "SELECT id, kind, source, published FROM items WHERE published >= ? AND published <= ?",
+        "SELECT id, kind, source, published, title, abstract FROM items"
+        " WHERE published >= ? AND published <= ?",
         (since, today.isoformat()),
     ).fetchall()
-    rows = [r for r in rows if r["id"] not in shown]
+    min_chars = ctx.settings.digest_min_text_chars
+    rows = [
+        r
+        for r in rows
+        if r["id"] not in shown and len(substance(r["title"], r["abstract"])) >= min_chars
+    ]
     vectors = item_vectors(ctx, [r["id"] for r in rows])
     profile = profile_vector(ctx)
     out = []
@@ -190,9 +197,25 @@ def load_candidates(ctx: AppContext, today: date, window_days: int) -> list[scor
                 hn_points=sig["hn_points"] or 0,
                 citations=sig["citations"] or 0,
                 citation_velocity=citation_velocity(ctx, r["id"], age),
+                title=r["title"],
             )
         )
     return out
+
+
+_HN_LINE = re.compile(r"Discussed on Hacker News \(.*?\)\.?")
+
+
+def substance(title: str, abstract: str) -> str:
+    """The text an item really has, minus the title and our own "Discussed on HN" line.
+
+    A Hacker News story with no text is just a headline: the Writer can't summarize it and
+    the Critic can't judge it, so it shouldn't take a digest slot. Its points still count,
+    through `hn_points`, for any paper it links to.
+    """
+    text = _HN_LINE.sub("", abstract or "")
+    text = text.replace(title + ".", "", 1).replace(title, "", 1)
+    return " ".join(text.split())
 
 
 def item_vectors(ctx: AppContext, ids: list[str]) -> dict[str, list[float]]:

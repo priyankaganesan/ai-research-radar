@@ -119,14 +119,23 @@ def build_team(llm: BaseChatModel, critic_llm=None, writer_llm=None, verifier_ll
 
         if cur is not None and stage == "critic":
             drops = (state.get("stats") or {}).get("critic_drops", 0)
-            if state["keep"] or drops >= MAX_DROPS or not state.get("reserve"):
+            reserve = list(state.get("reserve") or [])
+            used = {d["item_id"] for d in state.get("done") or []} | {
+                q["item_id"] for q in state.get("queue") or []
+            }
+            spare = [
+                i
+                for i, r in enumerate(reserve)
+                if r.get("slot", "main") == cur.get("slot", "main") and r["item_id"] not in used
+            ]
+            if state["keep"] or drops >= MAX_DROPS or not spare:
                 concerns = state["concerns"]  # kept items can still carry a concern
                 log.append({"item": cur["item_id"], "critic": "keep", "concerns": concerns})
                 cur = {**cur, "concerns": concerns}
                 return {"current": cur, "next": "writer", "log": log}
-            # Dropped: the next item by score takes this slot and meets the Critic too.
-            reserve = list(state["reserve"])
-            replacement = {**reserve.pop(0), "slot": "main"}
+            # Dropped: the next item that fits the same slot takes its place, and meets the
+            # Critic too. No back-up for that slot: the pick stays, with its concerns shown.
+            replacement = reserve.pop(spare[0])
             replacement["reason"] += f" (replaced {cur['item_id']}, dropped by the critic)"
             note = f"Critic dropped {cur['item_id']} ({cur['title'][:60]}): {state['concerns']}"
             log.append({"item": cur["item_id"], "critic": "drop", "concerns": state["concerns"]})

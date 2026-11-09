@@ -14,10 +14,16 @@ and new work with few citations should still get a look.
 """
 
 import math
+import re
 from dataclasses import dataclass, field
 
 DEFAULT_WEIGHTS = {"relevance": 0.45, "attention": 0.25, "citations": 0.10, "recency": 0.20}
 EARLY_BUZZ_MAX_CITATIONS = 5  # "few citations so far"
+# Lab blogs also publish customer stories ("Merge builds ... with OpenAI"); those aren't launches.
+NOT_A_LAUNCH = re.compile(
+    r"\b(builds?|built|uses?|powers?|scales?|transforms?)\b.+\bwith\b|customer stor|case stud",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -33,6 +39,7 @@ class Features:
     hn_points: int = 0
     citations: int = 0
     citation_velocity: float = 0.0  # citations gained per day
+    title: str = ""
 
 
 @dataclass
@@ -114,19 +121,13 @@ def pick(scored: list[Scored], n_main: int = 6, reserved: int = 2) -> list[Pick]
         taken.add(s.features.item_id)
 
     if reserved >= 1:
-        buzz = [
-            s
-            for s in scored
-            if s.features.kind == "paper"
-            and s.features.citations <= EARLY_BUZZ_MAX_CITATIONS
-            and attention_raw(s.features) > 0
-        ]
+        buzz = slot_candidates(scored, "early_buzz")
         if buzz:
-            take(max(buzz, key=lambda s: (attention_raw(s.features), s.total)), "early_buzz")
+            take(buzz[0], "early_buzz")
     if reserved >= 2:
-        labs = [s for s in scored if s.features.source.startswith("lab:")]
+        labs = slot_candidates(scored, "lab_launch")
         if labs:
-            take(labs[0], "lab_launch")  # already sorted by score
+            take(labs[0], "lab_launch")
 
     total = n_main + reserved
     for s in scored:
@@ -137,6 +138,27 @@ def pick(scored: list[Scored], n_main: int = 6, reserved: int = 2) -> list[Pick]
     # Reserved picks first in the list would bury the best main item: show main first.
     order = {"main": 0, "early_buzz": 1, "lab_launch": 2}
     return sorted(chosen, key=lambda p: (order[p.slot], -p.scored.total))
+
+
+def slot_candidates(scored: list[Scored], slot: str) -> list[Scored]:
+    """Everything eligible for a slot, best first. Used to fill the slot and, in M2.5, to
+    replace a pick the Critic drops with another item that fits the same slot."""
+    if slot == "early_buzz":
+        buzz = [
+            s
+            for s in scored
+            if s.features.kind == "paper"
+            and s.features.citations <= EARLY_BUZZ_MAX_CITATIONS
+            and attention_raw(s.features) > 0
+        ]
+        return sorted(buzz, key=lambda s: (-attention_raw(s.features), -s.total))
+    if slot == "lab_launch":
+        return [
+            s
+            for s in scored
+            if s.features.source.startswith("lab:") and not NOT_A_LAUNCH.search(s.features.title)
+        ]
+    return list(scored)  # main: anything, by score
 
 
 def explain(s: Scored, slot: str) -> str:

@@ -450,6 +450,9 @@ def eval_retrieval(ctx: AppContext, questions_file: Path, k: int = 5) -> dict:
     The file has one JSON object per line: {"question": ..., "expected_ids": [...]}.
     """
     rows = [json.loads(line) for line in questions_file.read_text().splitlines() if line.strip()]
+    # Questions the store shouldn't answer (should_abstain, no expected IDs) don't count
+    # toward retrieval recall; they're for checking that `ask` abstains.
+    rows = [r for r in rows if r.get("expected_ids")]
     results = []
     for row in rows:
         got = [p.item_id for p in search(ctx, row["question"], k=k)]

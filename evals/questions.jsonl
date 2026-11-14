@@ -1,0 +1,19 @@
+{"question": "How can a speculative decoding drafter propose several tokens at once without ignoring dependencies between them?", "expected_ids": ["2611.08669", "2611.06425"]}
+{"question": "What drafting approach works for speculative decoding on phones or other memory-limited devices?", "expected_ids": ["2611.07263"]}
+{"question": "Is it better for a chat agent's long-term memory to store compacted facts or to retrieve from the raw transcript?", "expected_ids": ["2611.09807"]}
+{"question": "Why doesn't quantizing the KV cache to 2 or 4 bits automatically make decoding faster, and how can that be fixed?", "expected_ids": ["2611.09722", "2611.09825"]}
+{"question": "How can an LLM server keep the KV cache in host DRAM for long contexts without hurting latency?", "expected_ids": ["2611.07542"]}
+{"question": "Can malicious instructions stored in an agent's memory affect its behaviour in later sessions?", "expected_ids": ["2611.09721"]}
+{"question": "How can a model learn to summarize an agent's interaction history without task-specific rewards?", "expected_ids": ["2611.06445"]}
+{"question": "Do more capable LLM agents overstep their permissions more often when using tools?", "expected_ids": ["2611.09113"]}
+{"question": "Is it better to spend test-time compute on many independent agents or on teams of collaborating agents?", "expected_ids": ["2611.09798"]}
+{"question": "How can you keep an LLM judge aligned with human evaluation policy as data changes over time?", "expected_ids": ["2611.07123"]}
+{"question": "Do LLM judges give different scores when the judging prompt is only reworded?", "expected_ids": ["2610.38076"]}
+{"question": "Is there a benchmark for hallucinations of agents that call tools through MCP servers?", "expected_ids": ["2611.07689"]}
+{"question": "How can ML agents avoid running expensive training jobs just to find out which candidate program is best?", "expected_ids": ["2610.38439"]}
+{"question": "What training-free methods reduce the lost-in-the-middle problem in long-context models?", "expected_ids": ["2611.09554"]}
+{"question": "How robust is chain-of-thought monitoring against agents that deliberately hide a side objective?", "expected_ids": ["2611.07586"]}
+{"question": "Is there a benchmark that tests whether AI agents can carry out end-to-end physics research?", "expected_ids": ["2611.06910"]}
+{"question": "Which paper from this week proves that transformers can never do arithmetic on numbers longer than 100 digits?", "expected_ids": [], "should_abstain": true}
+{"question": "What release date for GPT-7 does OpenAI's internal roadmap give?", "expected_ids": [], "should_abstain": true}
+{"question": "What is the current price per million tokens of the largest Gemini model?", "expected_ids": [], "should_abstain": true}

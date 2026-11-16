@@ -58,7 +58,7 @@ LANGSMITH_PROJECT=ai-research-radar
 
 Two LangGraph graphs:
 
-- **Daily graph (fixed order, no LLM routing):** `collect → dedupe → score → pick → summarize → digest → recheck_watchlist`. Only `summarize` calls Qwen.
+- **Daily graph (fixed order, no LLM routing):** `collect → learn → candidates (dedupe) → score → pick → summarize → render → recheck_watchlist`. Only `summarize` and the Profile agent inside `learn` call Qwen.
 - **Q&A graph (ReAct):** `reason → tool → evidence_check → (reason again | answer | abstain)`. Conditional edges decide the route; a step counter in state enforces the stopping rule.
 
 Export both graphs as Mermaid diagrams (`graph.get_graph().draw_mermaid()`) for the writeup.

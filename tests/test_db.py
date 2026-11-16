@@ -46,7 +46,14 @@ def test_002_keeps_data_from_an_m0_store(tmp_path):
     )
     conn.commit()
 
-    assert migrate(conn) == ["002_items.sql", "003_sources.sql", "004_digest.sql"]
+    assert migrate(conn) == [
+        "002_items.sql",
+        "003_sources.sql",
+        "004_digest.sql",
+        "005_memory.sql",
+        "006_tool_calls.sql",
+        "007_full_text.sql",
+    ]
     item = conn.execute("SELECT kind FROM items WHERE id = 'p1'").fetchone()
     assert item["kind"] == "paper"
     chunk = conn.execute("SELECT item_id, start_s FROM chunks WHERE id = 7").fetchone()

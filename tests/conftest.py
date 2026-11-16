@@ -9,6 +9,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 
+from radar import tracing
 from radar.config import Settings, get_settings
 from radar.context import AppContext
 from radar.rag.vector_index import SqliteVecIndex
@@ -26,7 +27,9 @@ def _isolated_env(monkeypatch, tmp_path):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "radar.db"))
     monkeypatch.setenv("CHECKPOINT_DB_PATH", str(tmp_path / "checkpoints.db"))
     get_settings.cache_clear()
+    tracing.configure(None)  # the local tool-call log is off unless a test turns it on
     yield
+    tracing.configure(None)
     get_settings.cache_clear()
 
 

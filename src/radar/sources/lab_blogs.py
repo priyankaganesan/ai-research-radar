@@ -20,6 +20,7 @@ import httpx
 
 from radar.schema import Item
 from radar.sources import http
+from radar.tracing import traced
 
 DEFAULT_FEEDS = {
     "OpenAI": "https://openai.com/news/rss.xml",
@@ -80,6 +81,7 @@ def parse_feed(xml: str, lab: str, since: date | None = None) -> list[Item]:
     return items
 
 
+@traced("lab_blogs.fetch_all", "tool", kind="source")
 def fetch_all(
     feeds: dict[str, str], days: int = 14, client: httpx.Client | None = None
 ) -> LabFetch:

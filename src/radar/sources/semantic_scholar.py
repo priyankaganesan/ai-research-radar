@@ -19,6 +19,7 @@ import httpx
 
 from radar.schema import Item
 from radar.sources import http
+from radar.tracing import traced
 
 API_URL = "https://api.semanticscholar.org/graph/v1"
 FIELDS = (
@@ -85,6 +86,7 @@ def parse_paper(p: dict) -> S2Paper:
     )
 
 
+@traced("semantic_scholar.lookup_arxiv", "tool", kind="source")
 def lookup_arxiv(
     arxiv_ids: list[str], client: httpx.Client | None = None, delay_s: float = POLITE_DELAY_S
 ) -> dict[str, S2Paper]:
@@ -112,6 +114,7 @@ def lookup_arxiv(
     return found
 
 
+@traced("semantic_scholar.search", "tool", kind="source")
 def search(query: str, limit: int = 5, client: httpx.Client | None = None) -> list[S2Paper]:
     """Keyword search across Semantic Scholar, most relevant first."""
     client = client or make_client()

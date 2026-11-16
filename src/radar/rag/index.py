@@ -4,7 +4,7 @@ import sqlite3
 
 from langchain_core.embeddings import Embeddings
 
-from radar.rag.chunking import abstract_chunk
+from radar.rag.chunking import Chunk, abstract_chunk
 from radar.rag.vector_index import SqliteVecIndex, VectorIndex
 from radar.schema import Item
 from radar.store import items as item_store
@@ -52,3 +52,52 @@ def index_items(
         if mirror is not None:
             mirror.add(chunk_ids, vecs)
     return len(todo)
+
+
+def replace_section_chunks(
+    conn: sqlite3.Connection,
+    embeddings: Embeddings,
+    vectors: VectorIndex,
+    item: Item,
+    chunks: list[Chunk],
+) -> list[int]:
+    """M5: store an item's full-text chunks, replacing any it had before. Returns their IDs.
+
+    The abstract chunk stays: it's still the best one-paragraph description of the paper. Old
+    section chunks are removed from all three places (chunks, FTS, vectors) first, so fetching
+    again (e.g. with new chunk sizes) doesn't leave duplicates behind.
+    """
+    store_vectors = SqliteVecIndex(conn)
+    mirror = None if isinstance(vectors, SqliteVecIndex) else vectors
+    vecs: list[list[float]] = []
+    for start in range(0, len(chunks), EMBED_BATCH):  # embed before writing: slow, can fail
+        vecs += embeddings.embed_documents([c.text for c in chunks[start : start + EMBED_BATCH]])
+    old = [
+        r[0]
+        for r in conn.execute(
+            "SELECT id FROM chunks WHERE item_id = ? AND kind = 'section'", (item.id,)
+        )
+    ]
+    with conn:
+        if old:
+            store_vectors.delete(old)
+            conn.executemany("DELETE FROM chunks_fts WHERE rowid = ?", [(i,) for i in old])
+            conn.executemany("DELETE FROM chunks WHERE id = ?", [(i,) for i in old])
+        ids = []
+        for c in chunks:
+            cur = conn.execute(
+                "INSERT INTO chunks (item_id, kind, section, text, token_count)"
+                " VALUES (?, 'section', ?, ?, ?)",
+                (item.id, c.section, c.text, c.token_count),
+            )
+            ids.append(cur.lastrowid)
+            conn.execute(
+                "INSERT INTO chunks_fts (rowid, title, text) VALUES (?, ?, ?)",
+                (cur.lastrowid, item.title, c.text),
+            )
+        store_vectors.add(ids, vecs)
+    if mirror is not None:
+        if old:
+            mirror.delete(old)
+        mirror.add(ids, vecs)
+    return ids

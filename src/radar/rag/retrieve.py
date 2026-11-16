@@ -7,6 +7,7 @@ that embeddings often miss.
 
 import re
 import sqlite3
+import struct
 
 from langchain_core.embeddings import Embeddings
 
@@ -70,7 +71,7 @@ def hybrid_search(
     placeholders = ",".join("?" * len(scores))
     rows = conn.execute(
         f"""
-        SELECT c.id, c.item_id, c.text, i.title, i.url, i.published, i.kind
+        SELECT c.id, c.item_id, c.text, c.section, i.title, i.url, i.published, i.kind
         FROM chunks c JOIN items i ON i.id = c.item_id
         WHERE c.id IN ({placeholders})
         """,
@@ -92,7 +93,75 @@ def hybrid_search(
             published=r["published"],
             text=r["text"],
             score=round(scores[r["id"]], 5),
+            section=r["section"],
         )
         if len(best) == k:
             break
     return list(best.values())
+
+
+def search_item(
+    conn: sqlite3.Connection,
+    embeddings: Embeddings,
+    item_id: str,
+    query: str,
+    k: int = 3,
+    kind: str = "section",
+) -> list[Passage]:
+    """M5: the k best chunks *inside one item* (its full-text sections), best first.
+
+    Same idea as hybrid_search (vector rank + BM25 rank, fused with RRF), but over one paper's
+    few dozen chunks, so the vector side is a plain cosine in Python on vectors read from
+    SQLite. That works the same whichever VECTOR_BACKEND is active, because SQLite always holds
+    every vector.
+    """
+    rows = conn.execute(
+        "SELECT c.id, c.text, c.section, i.title, i.url, i.published FROM chunks c"
+        " JOIN items i ON i.id = c.item_id WHERE c.item_id = ? AND c.kind = ?",
+        (item_id, kind),
+    ).fetchall()
+    if not rows:
+        return []
+    by_id = {r["id"]: r for r in rows}
+    qvec = embeddings.embed_query(QUERY_INSTRUCTION + query)
+    sims = {}
+    for cid in by_id:
+        blob = conn.execute(
+            "SELECT embedding FROM chunks_vec WHERE chunk_id = ?", (cid,)
+        ).fetchone()
+        if blob:
+            sims[cid] = _cosine(qvec, struct.unpack(f"{len(blob[0]) // 4}f", blob[0]))
+    by_vector = sorted(sims, key=sims.get, reverse=True)
+    q = fts_query(query)
+    by_keyword = []
+    if q:
+        marks = ",".join("?" * len(by_id))
+        by_keyword = [
+            r[0]
+            for r in conn.execute(
+                f"SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ? AND rowid IN ({marks})"
+                " ORDER BY bm25(chunks_fts)",
+                [q, *by_id],
+            )
+        ]
+    scores = rrf([by_vector, by_keyword])
+    best = sorted(scores, key=scores.get, reverse=True)[:k]
+    return [
+        Passage(
+            item_id=item_id,
+            title=by_id[c]["title"],
+            url=by_id[c]["url"],
+            published=by_id[c]["published"],
+            text=by_id[c]["text"],
+            score=round(scores[c], 5),
+            section=by_id[c]["section"],
+        )
+        for c in best
+    ]
+
+
+def _cosine(a, b) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0

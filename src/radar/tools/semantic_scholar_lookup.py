@@ -16,10 +16,12 @@ from radar.schema import Passage
 from radar.sources import semantic_scholar
 from radar.store import items as item_store
 from radar.store import signals as signal_store
+from radar.tracing import traced
 
 
 def make_semantic_scholar_lookup(ctx: AppContext) -> BaseTool:
     @tool
+    @traced("tool.semantic_scholar_lookup", "tool", kind="agent_tool", langsmith=False)
     def semantic_scholar_lookup(query: str, max_results: int = 5) -> list[dict]:
         """Search Semantic Scholar for papers, with citation counts and one-line summaries.
 

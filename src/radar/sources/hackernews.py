@@ -18,6 +18,7 @@ from datetime import date, datetime, timedelta
 import httpx
 
 from radar.sources import http
+from radar.tracing import traced
 
 API_URL = "https://hn.algolia.com/api/v1/search_by_date"
 DEFAULT_QUERIES = ("LLM", "language model", "AI model", "arxiv", "OpenAI", "Anthropic", "DeepMind")
@@ -67,6 +68,7 @@ def parse_hits(data: dict) -> list[HNStory]:
     return out
 
 
+@traced("hackernews.fetch_stories", "tool", kind="source")
 def fetch_stories(
     queries: tuple[str, ...] | list[str] = DEFAULT_QUERIES,
     days: int = 2,

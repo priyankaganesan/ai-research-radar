@@ -106,12 +106,17 @@ class Pick:
     reason: str
 
 
-def pick(scored: list[Scored], n_main: int = 6, reserved: int = 2) -> list[Pick]:
+def pick(
+    scored: list[Scored], n_main: int = 6, reserved: int = 2, plan: list[str] | None = None
+) -> list[Pick]:
     """Choose the digest: the reserved slots first, then the best of the rest.
 
     - early_buzz: the most-upvoted *paper* with few citations so far
     - lab_launch: the best-scoring post from an AI lab blog
-    A reserved slot with no candidate goes to the main list, so the digest stays full.
+    `plan` (M4) lists the reserved slots in order, e.g. ["lab_launch", "early_buzz",
+    "lab_launch"] when ratings favour lab posts; by default it's early_buzz then lab_launch,
+    cut to `reserved`. A reserved slot with no candidate goes to the main list, so the digest
+    stays full.
     """
     chosen: list[Pick] = []
     taken: set[str] = set()
@@ -120,16 +125,13 @@ def pick(scored: list[Scored], n_main: int = 6, reserved: int = 2) -> list[Pick]
         chosen.append(Pick(s, slot, explain(s, slot)))
         taken.add(s.features.item_id)
 
-    if reserved >= 1:
-        buzz = slot_candidates(scored, "early_buzz")
-        if buzz:
-            take(buzz[0], "early_buzz")
-    if reserved >= 2:
-        labs = slot_candidates(scored, "lab_launch")
-        if labs:
-            take(labs[0], "lab_launch")
+    plan = plan if plan is not None else ["early_buzz", "lab_launch"][:reserved]
+    for slot in plan:
+        spare = [s for s in slot_candidates(scored, slot) if s.features.item_id not in taken]
+        if spare:
+            take(spare[0], slot)
 
-    total = n_main + reserved
+    total = n_main + len(plan)
     for s in scored:
         if len(chosen) >= total:
             break

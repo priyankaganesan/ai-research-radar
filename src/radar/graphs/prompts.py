@@ -17,6 +17,9 @@ Tools:
 - search_arxiv: search arXiv live. Use it when the store lacks what the question needs.
 - semantic_scholar_lookup: search Semantic Scholar live; results include citation counts.
   Use it when the store lacks the answer, when citations matter, or when search_arxiv fails.
+- fetch_full_text: read inside one paper you already found (give its ID and what to look for).
+  Use it when you have the right paper but its abstract lacks the detail asked for: how the
+  method works, settings, numbers, ablations, limitations.
 
 Question: {question}
 
@@ -55,13 +58,20 @@ Name specific papers if you can.
 Question: {question}"""
 
 
-def format_passages(passages: list[dict], max_chars: int = 1200) -> str:
+def format_passages(
+    passages: list[dict], max_chars: int = 1200, section_chars: int | None = 2400
+) -> str:
+    """Passages as text for a prompt. Full-text sections (M5) are ~500 tokens, so they get a
+    bigger budget (`section_chars`) than abstracts; pass None to use `max_chars` for all."""
     if not passages:
         return "(none)"
-    return "\n\n".join(
-        f"[{p['item_id']}] {p['title']} ({p['published']})\n{p['text'][:max_chars]}"
-        for p in passages
-    )
+    out = []
+    for p in passages:
+        section = p.get("section")
+        limit = section_chars if (section and section_chars) else max_chars
+        where = f" -- section: {section}" if section else ""
+        out.append(f"[{p['item_id']}] {p['title']} ({p['published']}){where}\n{p['text'][:limit]}")
+    return "\n\n".join(out)
 
 
 # ---- Daily digest (M2) ----
@@ -131,3 +141,30 @@ Claims:
 
 Reply with JSON only, one entry per claim:
 [{{"n": 1, "supported": true or false, "why": "short reason"}}]"""
+
+
+# ---- Long-term memory and feedback (M4) ----
+
+PROFILE = """You are the Profile agent of a personal AI research digest. You keep the reader's \
+list of interest topics up to date. The topics steer which papers are ranked as relevant.
+
+Current interest topics:
+{topics}
+
+Items the reader rated USEFUL recently:
+{useful}
+
+Items the reader rated NOT RELEVANT recently:
+{not_relevant}
+
+Questions the reader asked that the store could not answer (knowledge gaps):
+{gaps}
+
+Suggest small changes only:
+- add at most 2 topics: a theme that several useful items or gaps share and that no current \
+topic covers. A topic is a short research phrase (2 to 6 words), like the current ones.
+- remove at most 1 topic: only if not-relevant items clearly match it and no useful item does.
+- If the evidence is thin or mixed, change nothing. Changing nothing is a good answer.
+
+Reply with JSON only:
+{{"add": ["topic", ...], "remove": ["topic", ...], "why": "one or two sentences"}}"""

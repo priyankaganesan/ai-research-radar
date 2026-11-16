@@ -42,7 +42,9 @@ def compare(
         )
         run_ctx = AppContext(settings, ctx.conn, ctx.embeddings, ctx.vectors)
         start = time.perf_counter()
-        result = services.daily(run_ctx, on=on, collect=False, mode=mode, llm=llm)
+        # learn=False: both modes rank with the same profile, and the comparison
+        # doesn't spend model calls on the Profile agent.
+        result = services.daily(run_ctx, on=on, collect=False, mode=mode, llm=llm, learn=False)
         total = time.perf_counter() - start
         verdicts = [judge_summary(judge, p) for p in result.picks]
         claims = [r for v in verdicts for r in v]

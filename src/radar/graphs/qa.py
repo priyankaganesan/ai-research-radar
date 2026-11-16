@@ -88,7 +88,7 @@ def build_qa_graph(
         missing = f"Still missing: {state['missing']}\n" if state.get("missing") else ""
         prompt = prompts.REASON.format(
             question=state["question"],
-            evidence=prompts.format_passages(state["passages"], max_chars=300),
+            evidence=prompts.format_passages(state["passages"], max_chars=300, section_chars=None),
             searches=", ".join(state["searches_done"]) or "none",
             missing=missing,
         )
@@ -112,7 +112,9 @@ def build_qa_graph(
 
     def run_tools(state: QAState) -> dict:
         passages = list(state["passages"])
-        seen = {p["item_id"] for p in passages}
+        # One passage per item, except full-text sections (M5): several sections of one paper
+        # are different evidence, so they're kept apart by (item, section).
+        seen = {_key(p) for p in passages}
         searches = list(state["searches_done"])
         trace = list(state["trace"])
         steps = state["steps"]
@@ -128,9 +130,9 @@ def build_qa_graph(
             except Exception as e:  # network errors etc. become an observation, not a crash
                 trace.append({"step": "observe", "result": f"tool error: {e}"})
                 continue
-            new = [p for p in found if p["item_id"] not in seen]
+            new = [p for p in found if _key(p) not in seen]
             passages.extend(new)
-            seen.update(p["item_id"] for p in new)
+            seen.update(_key(p) for p in new)
             trace.append(
                 {
                     "step": "observe",
@@ -267,8 +269,14 @@ def build_qa_graph(
     return g.compile(checkpointer=checkpointer)
 
 
+def _key(p: dict) -> tuple[str, str | None]:
+    return (p["item_id"], p.get("section"))
+
+
 def with_sources(text: str, cited: list[str], passages: list[dict]) -> str:
-    by_id = {p["item_id"]: p for p in passages}
+    by_id = {}
+    for p in passages:
+        by_id.setdefault(p["item_id"], p)
     sources = "\n".join(
         f"[{i}] {by_id[i]['title']} ({by_id[i]['published']}) {by_id[i]['url']}" for i in cited
     )

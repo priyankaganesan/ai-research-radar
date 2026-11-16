@@ -17,6 +17,7 @@ import httpx
 
 from radar.schema import Item
 from radar.sources import http
+from radar.tracing import traced
 
 API_URL = "https://huggingface.co/api/daily_papers"
 _ARXIV_ID = re.compile(r"^\d{4}\.\d{4,5}$")
@@ -52,6 +53,7 @@ def parse_daily(data: list[dict]) -> list[HFPaper]:
     return out
 
 
+@traced("hf_papers.fetch_daily", "tool", kind="source")
 def fetch_daily(day: date, client: httpx.Client | None = None) -> list[HFPaper]:
     """One day's Daily Papers."""
     client = client or http.make_client()
@@ -61,6 +63,7 @@ def fetch_daily(day: date, client: httpx.Client | None = None) -> list[HFPaper]:
     return parse_daily(resp.json())
 
 
+@traced("hf_papers.fetch_recent", "tool", kind="source")
 def fetch_recent(days: int = 3, client: httpx.Client | None = None) -> list[HFPaper]:
     """Daily Papers for the last `days` days (today included). A paper listed twice keeps its
     highest upvote count."""

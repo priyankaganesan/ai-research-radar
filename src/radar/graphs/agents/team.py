@@ -222,15 +222,20 @@ def fallback_summary(item: dict) -> str:
 
 
 def make_team_summarizer(
-    llm: BaseChatModel, topics: str, load_reserve: Callable[[dict], list[dict]]
+    llm: BaseChatModel,
+    topics: str | Callable[[], str],
+    load_reserve: Callable[[dict], list[dict]],
 ) -> Callable[[dict], dict]:
-    """The daily graph's `summarize` node, multi-agent version (DIGEST_MODE=multi)."""
+    """The daily graph's `summarize` node, multi-agent version (DIGEST_MODE=multi).
+
+    `topics` can be a function, so the Critic sees the profile as it is when the node runs
+    (M4: the profile may have just changed earlier in the same daily run)."""
     team = build_team(llm)
 
     def summarize(state: dict) -> dict:
         out = team.invoke(
             {
-                "topics": topics,
+                "topics": topics() if callable(topics) else topics,
                 "queue": state["picks"],
                 "reserve": load_reserve(state),
                 "stats": new_stats(),

@@ -36,7 +36,14 @@ uv run radar show 2401.10774          # one item with its TLDR and signals
 uv run radar search "speculative decoding"   # retrieval only, no LLM
 uv run radar ask "How does Medusa speed up decoding?" --steps
 uv run radar ask "..." --no-retrieval  # same model, no tools: the comparison baseline
-uv run radar eval --file evals/questions.jsonl   # retrieval recall@5
+uv run radar eval                    # retrieval recall@5 and MRR (fast, no LLM)
+uv run radar eval -t all --judge     # + agent and no-retrieval baseline (LangSmith if keyed)
+uv run radar eval -t agent -m qwen3.5:9b -m qwen3.5:4b   # compare chat models
+uv run radar fulltext 2401.10774 -q "how are the heads trained"   # M5: read inside a paper
+uv run radar fulltext                # full texts fetched so far (auto after 2 cited questions)
+uv run radar health                  # database, Ollama and both models reachable?
+uv run radar schedule install --at 07:30   # M6: launchd runs `radar daily` every morning
+uv run radar schedule status         # loaded? last exit code? (also: run, remove)
 uv run radar reindex --backend lance [--ann]  # copy vectors into LanceDB (optional IVF-PQ index)
 uv run radar compare-backends                  # sqlite-vec vs. LanceDB: recall, latency, disk
 uv run radar daily                    # collect, rank, summarize: data/digests/YYYY-MM-DD.md
@@ -45,17 +52,23 @@ uv run radar daily --mode multi       # Critic, Writer and Verifier agents write
 uv run radar ask "..." --verify       # the Verifier agent checks each claim of the answer
 uv run radar compare-agents           # single vs. multi-agent: claim support and time
 uv run radar mcp                      # MCP server over stdio (see below)
+uv run radar rate 2611.06741 useful   # rate a digest item: useful | not_relevant | skipped
+uv run radar profile                  # interest topics, scoring weights, reserved slots, changes
+uv run radar profile --update         # apply pending ratings now (radar daily does it too)
+uv run radar watchlist                # early-buzz papers waiting to earn citations
+uv run radar gaps                     # questions the agent couldn't answer yet
+uv run radar calls                    # local log of every traced call (--tree last, --errors, --stats)
 uv run pytest             # tests (never call Ollama or the network)
 uv run ruff check .       # lint
 ```
 
-`rate` and `watchlist` are stubs until their milestones land.
+`radar serve` (the web UI) is not built yet.
 
 ## Use Radar from Claude Code or Claude Desktop (MCP)
 
 `radar mcp` is an MCP server. It offers `store_search`, `search_arxiv`,
-`semantic_scholar_lookup`, `get_item` and `ask`, the resources `radar://digest/latest` and
-`radar://stats`, and the prompt `explain_paper`.
+`semantic_scholar_lookup`, `fetch_full_text`, `get_item`, `ask` and `rate`, the resources `radar://digest/latest`,
+`radar://stats`, `radar://watchlist` and `radar://profile`, and the prompt `explain_paper`.
 
 Claude Code (VS Code extension or CLI) picks up the project's `.mcp.json` automatically: reload
 the window, approve the `radar` server, and check it with `/mcp`. If `uv` isn't at

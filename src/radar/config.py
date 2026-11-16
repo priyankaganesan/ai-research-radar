@@ -38,12 +38,25 @@ class Settings(BaseSettings):
     # LangSmith reads its own LANGSMITH_* variables; these are here so `radar config` can show them.
     langsmith_tracing: bool = False
     langsmith_project: str = "ai-research-radar"
+    # Local tool-call log (the tool_calls table, read by `radar calls`). Works with LangSmith off.
+    tool_log: bool = True
+    tool_log_keep_days: int = 30  # rows older than this are deleted when the app starts
 
     # Q&A loop
     max_tool_steps: int = 5
     # Thinking mode for the reason step: shows Qwen's reasoning in --steps, but each step is slower.
     reason_thinking: bool = False
     retrieval_k: int = 5
+
+    # Full text (M5)
+    # Fetch a paper's full text once this many answered questions have cited it (0 = never
+    # automatically; the agent's fetch_full_text tool and `radar fulltext` still work).
+    full_text_after_questions: int = 2
+    full_text_chunk_tokens: int = 500
+    full_text_overlap_tokens: int = 50
+    # A cap on chunks per item, so one 80-page paper can't take minutes of embedding.
+    full_text_max_chunks: int = 120
+    full_text_retry_days: int = 7  # a failed fetch is tried again after this many days
     # Daily digest (M2)
     # Seed interests for the relevance score, until ratings (M4) refine the profile.
     interest_topics: str = (

@@ -19,6 +19,7 @@ import httpx
 
 from radar.schema import Item
 from radar.sources import http
+from radar.tracing import traced
 
 API_URL = "https://export.arxiv.org/api/query"
 RSS_URL = "https://rss.arxiv.org/rss/{cats}"
@@ -81,6 +82,7 @@ def _get(client: httpx.Client, params: dict, backoff_s: float = BACKOFF_S) -> li
     return parse_feed(resp.text)
 
 
+@traced("arxiv.fetch_recent", "tool", kind="source")
 def fetch_recent(
     days: int = 7,
     categories: tuple[str, ...] | list[str] = DEFAULT_CATEGORIES,
@@ -141,6 +143,7 @@ def parse_rss(xml: str) -> list[Item]:
     return items
 
 
+@traced("arxiv.fetch_latest_rss", "tool", kind="source")
 def fetch_latest_rss(
     categories: tuple[str, ...] | list[str] = DEFAULT_CATEGORIES,
     client: httpx.Client | None = None,
@@ -157,6 +160,7 @@ def fetch_latest_rss(
     return parse_rss(resp.text)
 
 
+@traced("arxiv.search", "tool", kind="source")
 def search(query: str, max_results: int = 10, client: httpx.Client | None = None) -> list[Item]:
     """Keyword search across all of arXiv, most relevant first."""
     client = client or make_client()

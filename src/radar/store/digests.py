@@ -5,12 +5,17 @@ import sqlite3
 
 
 def save_digest(conn: sqlite3.Connection, on: str, rows: list[dict]) -> None:
-    """Replace the digest for one date. rows: {item_id, rank, slot, score, reason}."""
+    """Replace the digest for one date. rows: {item_id, rank, slot, score, reason, parts?}.
+
+    `parts` (M4) is the score broken into its terms; a rating uses it to tune the weights."""
     conn.execute("DELETE FROM digests WHERE date = ?", (on,))
     conn.executemany(
-        "INSERT INTO digests (date, item_id, rank, slot, score, reason)"
-        " VALUES (:date, :item_id, :rank, :slot, :score, :reason)",
-        [{**r, "date": on} for r in rows],
+        "INSERT INTO digests (date, item_id, rank, slot, score, reason, parts)"
+        " VALUES (:date, :item_id, :rank, :slot, :score, :reason, :parts)",
+        [
+            {**r, "date": on, "parts": json.dumps(r["parts"]) if r.get("parts") else None}
+            for r in rows
+        ],
     )
 
 

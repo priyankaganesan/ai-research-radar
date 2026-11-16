@@ -1,22 +1,29 @@
 """The daily graph: a fixed pipeline that turns new items into a ranked, summarized digest.
 
-    START -> collect -> candidates -> score -> pick -> summarize -> render -> END
+    START -> collect -> learn -> candidates -> score -> pick -> summarize -> render
+          -> recheck_watchlist -> END
 
 Unlike the Q&A graph there's no LLM routing: every run takes the same path. Only `summarize`
 calls Qwen. Everything else is plain code, so it's fast, testable and the same every day.
 
 - collect:    run the sources (arXiv, HF, labs, HN, then Semantic Scholar enrich). Injected as a
               function, so tests and `radar daily --no-collect` can skip the network.
+- learn:      (M4) apply new ratings to the profile: weights, reserved slots, and the Profile
+              agent's topic edits (`personalize.update_profile`). Before scoring, so today's
+              digest already reflects yesterday's ratings.
 - candidates: items published in the last N days that weren't in an earlier digest ("dedupe":
               the store already merges duplicate IDs; this drops repeats across days).
 - score:      build Features for each candidate from the store, then `scoring.score_all`.
-- pick:       `scoring.pick`: 6 main + 2 reserved slots (early buzz, lab launch).
+- pick:       `scoring.pick`: 8 items; 1 to 3 of them in reserved slots (early buzz, lab
+              launch), the count and order coming from the profile (M4).
 - summarize:  M2: one Qwen call per pick. M2.5 swaps this node for the multi-agent team.
-- render:     write the Markdown file and the `digests` rows.
+- render:     write the Markdown file and the `digests` rows; early-buzz picks go on the
+              watchlist (M4).
+- recheck_watchlist: (M4) watched papers past their re-check date are marked established or
+              dropped, by citations gained.
 """
 
 import re
-import struct
 import time
 from collections.abc import Callable
 from dataclasses import asdict
@@ -27,11 +34,12 @@ from typing import Any, TypedDict
 from langchain_core.language_models import BaseChatModel
 from langgraph.graph import END, START, StateGraph
 
-from radar import scoring
+from radar import feedback, personalize, scoring
 from radar.context import AppContext
 from radar.digest import to_markdown
 from radar.graphs import prompts
 from radar.graphs.qa import keep_valid_citations
+from radar.personalize import item_vectors, load_profile, profile_vector
 from radar.store import digests as digest_store
 from radar.store import signals as signal_store
 
@@ -47,6 +55,8 @@ class DailyState(TypedDict, total=False):
     timings: dict[str, float]  # seconds per node, for the single vs. multi comparison
     stats: dict[str, Any]  # counters from the summarize step (M2.5 fills more)
     team_log: list[dict]  # M2.5: every handoff between the agents
+    profile_log: list[str]  # M4: what the learn step changed
+    watch_log: list[str]  # M4: watchlist additions and re-checks
 
 
 def build_daily_graph(
@@ -55,8 +65,11 @@ def build_daily_graph(
     collect: Callable[[AppContext], list[str]] | None = None,
     summarize: Callable[[DailyState], dict] | None = None,
     mode: str = "single",
+    learn: bool = True,
 ):
-    """`summarize` replaces the default one-call-per-pick summarizer (M2.5 passes its team)."""
+    """`summarize` replaces the default one-call-per-pick summarizer (M2.5 passes its team).
+    `learn=False` builds the digest from the profile as it is, without applying new ratings
+    (the agent comparison uses it, so both modes see the same profile)."""
     s = ctx.settings
 
     def timed(name: str, fn: Callable[[DailyState], dict]):
@@ -73,24 +86,32 @@ def build_daily_graph(
             return {"collect_log": ["collection skipped (using the store as it is)"]}
         return {"collect_log": collect(ctx)}
 
+    def learn_node(state: DailyState) -> dict:
+        if not learn:
+            return {"profile_log": ["profile: not updated on this run"]}
+        return {"profile_log": personalize.update_profile(ctx, llm).lines()}
+
     def candidates_node(state: DailyState) -> dict:
         today = date.fromisoformat(state["date"])
         feats = load_candidates(ctx, today, s.digest_window_days)
         return {"candidates": [asdict(f) for f in feats]}
 
     def score_node(state: DailyState) -> dict:
-        weights = digest_store.get_profile(ctx.conn).get("weights")
+        weights = load_profile(ctx).weights
         scored = scoring.score_all(
             [scoring.Features(**c) for c in state["candidates"]], weights=weights
         )
         return {"scored": [_scored_dict(x) for x in scored]}
 
     def pick_node(state: DailyState) -> dict:
-        reserved = digest_store.get_profile(ctx.conn).get("reserved_slots", s.digest_reserved)
+        prof = load_profile(ctx)
+        plan = feedback.reserved_plan(prof.reserved_slots, prof.slot_order)
+        size = s.digest_main + s.digest_reserved  # the digest stays at 8; reserved share varies
         scored = [_scored_from(d) for d in state["scored"]]
-        picks = scoring.pick(scored, n_main=s.digest_main, reserved=reserved)
+        picks = scoring.pick(scored, n_main=size - len(plan), plan=plan)
         rows = [
             item_row(ctx, p.scored.features.item_id, p.slot, p.scored.total, p.reason)
+            | {"parts": p.scored.parts}
             for p in picks
         ]
         return {"picks": rows}
@@ -107,13 +128,16 @@ def build_daily_graph(
             ][:n]
             for x in spare:
                 fid = x.features.item_id
-                out.append(item_row(ctx, fid, slot, x.total, scoring.explain(x, slot)))
+                row = item_row(ctx, fid, slot, x.total, scoring.explain(x, slot))
+                out.append(row | {"parts": x.parts})
         return out
 
     if summarize is None and mode == "multi":
         from radar.graphs.agents.team import make_team_summarizer
 
-        summarize = make_team_summarizer(llm, s.interest_topics, load_reserve)
+        summarize = make_team_summarizer(
+            llm, lambda: ", ".join(load_profile(ctx).topics), load_reserve
+        )
 
     def single_summarize(state: DailyState) -> dict:
         picks = []
@@ -135,29 +159,40 @@ def build_daily_graph(
                 ctx.conn,
                 on,
                 [
-                    {k: p[k] for k in ("item_id", "slot", "score", "reason")} | {"rank": n}
+                    {k: p.get(k) for k in ("item_id", "slot", "score", "reason", "parts")}
+                    | {"rank": n}
                     for n, p in enumerate(state["picks"], 1)
                 ],
             )
             for p in state["picks"]:
                 if p.get("summary"):
                     digest_store.save_summary(ctx.conn, p["item_id"], p["summary"], model, mode)
-        return {"path": str(path)}
+            added = personalize.watch_early_buzz(ctx, state["picks"], date.fromisoformat(on))
+        log = [f"watchlist: {added} early-buzz paper(s) added"] if added else []
+        return {"path": str(path), "watch_log": log}
+
+    def recheck_node(state: DailyState) -> dict:
+        log = personalize.recheck_watchlist(ctx, date.fromisoformat(state["date"]))
+        return {"watch_log": state.get("watch_log", []) + log}
 
     g = StateGraph(DailyState)
     g.add_node("collect", timed("collect", collect_node))
+    g.add_node("learn", timed("learn", learn_node))
     g.add_node("candidates", timed("candidates", candidates_node))
     g.add_node("score", timed("score", score_node))
     g.add_node("pick", timed("pick", pick_node))
     g.add_node("summarize", timed("summarize", summarize or single_summarize))
     g.add_node("render", timed("render", render_node))
+    g.add_node("recheck_watchlist", timed("recheck_watchlist", recheck_node))
     g.add_edge(START, "collect")
-    g.add_edge("collect", "candidates")
+    g.add_edge("collect", "learn")
+    g.add_edge("learn", "candidates")
     g.add_edge("candidates", "score")
     g.add_edge("score", "pick")
     g.add_edge("pick", "summarize")
     g.add_edge("summarize", "render")
-    g.add_edge("render", END)
+    g.add_edge("render", "recheck_watchlist")
+    g.add_edge("recheck_watchlist", END)
     return g.compile()
 
 
@@ -216,36 +251,6 @@ def substance(title: str, abstract: str) -> str:
     text = _HN_LINE.sub("", abstract or "")
     text = text.replace(title + ".", "", 1).replace(title, "", 1)
     return " ".join(text.split())
-
-
-def item_vectors(ctx: AppContext, ids: list[str]) -> dict[str, list[float]]:
-    """Each item's abstract vector, read back from sqlite-vec (no re-embedding)."""
-    out: dict[str, list[float]] = {}
-    for start in range(0, len(ids), 500):
-        batch = ids[start : start + 500]
-        marks = ",".join("?" * len(batch))
-        rows = ctx.conn.execute(
-            f"SELECT c.item_id, v.embedding FROM chunks c JOIN chunks_vec v ON v.chunk_id = c.id"
-            f" WHERE c.kind = 'abstract' AND c.item_id IN ({marks})",
-            batch,
-        )
-        for item_id, blob in rows:
-            out[item_id] = list(struct.unpack(f"{len(blob) // 4}f", blob))
-    return out
-
-
-def profile_vector(ctx: AppContext) -> list[float]:
-    """The interest profile as one vector: the mean of the seed topics' embeddings.
-
-    M4 will add the vectors of items rated useful (and push away from not-relevant ones).
-    """
-    profile = digest_store.get_profile(ctx.conn)
-    topics = profile.get("topics") or [
-        t.strip() for t in ctx.settings.interest_topics.split(",") if t.strip()
-    ]
-    if not topics:
-        return []
-    return scoring.mean_vector(ctx.embeddings.embed_documents(topics))
 
 
 def citation_velocity(ctx: AppContext, item_id: str, age_days: int) -> float:

@@ -9,11 +9,6 @@ from radar.config import get_settings
 app = typer.Typer(help="AI Research Radar: track, summarize and explain new AI research.")
 
 
-def _todo(milestone: str) -> None:
-    typer.echo(f"Not built yet (planned for {milestone}, see PLAN.md).")
-    raise typer.Exit(code=1)
-
-
 def _ctx():
     from radar.context import build_context
     from radar.rag.vector_index import SqliteVecIndex
@@ -211,11 +206,72 @@ def ask(
             typer.secho(f"  {t}", fg=typer.colors.BRIGHT_BLACK)
         typer.echo()
     typer.echo(result.answer)
+    for f in result.full_texts:  # M5: this paper keeps coming up, so its full text was fetched
+        if f["status"] == "ok":
+            typer.secho(
+                f"\n(Fetched the full text of {f['item_id']}: cited by {f['times_cited']}"
+                f" questions. {f['chunks']} section chunks are now searchable.)",
+                fg=typer.colors.BRIGHT_BLACK,
+            )
+        elif f["status"] == "failed":
+            typer.secho(
+                f"\n(Tried to fetch the full text of {f['item_id']}: {f['error']})",
+                fg=typer.colors.BRIGHT_BLACK,
+            )
     if not no_retrieval:
         typer.secho(
             f"\n(conversation: {result.thread_id}; follow up with --thread {result.thread_id})",
             fg=typer.colors.BRIGHT_BLACK,
         )
+
+
+@app.command("fulltext")
+def fulltext(
+    item_id: str | None = typer.Argument(None, help="Item to fetch; omit to list full texts."),
+    query: str | None = typer.Option(
+        None, "--query", "-q", help="Show the best sections for this."
+    ),
+    force: bool = typer.Option(False, help="Fetch again even if it's already stored."),
+) -> None:
+    """M5: fetch a paper's full text (sections, ~500-token chunks), or list fetched ones."""
+    from radar import services
+
+    ctx = _ctx()
+    if item_id is None:
+        rows = services.full_text_list(ctx)
+        if not rows:
+            typer.echo(
+                "No full texts yet. They're fetched when a paper is cited by "
+                f"{ctx.settings.full_text_after_questions} questions, or with "
+                "`radar fulltext ITEM_ID`."
+            )
+        for r in rows:
+            what = (
+                f"{r['source']}, {r['n_sections']} sections, {r['n_chunks']} chunks"
+                if r["status"] == "ok"
+                else f"failed: {r['error']}"
+            )
+            typer.echo(f"{r['fetched_at'][:16]}  [{r['item_id']}] {r['title'][:60]}")
+            typer.secho(f"    {what}  ({r['reason']})", fg=typer.colors.BRIGHT_BLACK)
+        return
+    try:
+        r = services.full_text(ctx, item_id, force=force)
+    except ValueError as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1) from e
+    if r.status == "failed":
+        typer.echo(f"No full text: {r.error}")
+        raise typer.Exit(code=1)
+    note = " (already stored; --force fetches again)" if r.status == "cached" else ""
+    typer.echo(f"{item_id}: {r.source}, {r.sections} sections, {r.chunks} chunks{note}")
+    for h in r.headings:
+        typer.secho(f"  - {h}", fg=typer.colors.BRIGHT_BLACK)
+    if query:
+        typer.echo()
+        for p in services.search_full_text(ctx, item_id, query):
+            typer.echo(f"[{p.section}]  score={p.score}")
+            body = p.text.split("\n\n", 1)[-1]
+            typer.secho(f"  {body[:400]}...", fg=typer.colors.BRIGHT_BLACK)
 
 
 @app.command()
@@ -236,15 +292,33 @@ def daily(
     ),
     on: str | None = typer.Option(None, "--date", help="Digest date, YYYY-MM-DD (default today)."),
     mode: str | None = typer.Option(None, help="single (one summarize step) or multi (agents)."),
+    scheduled: bool = typer.Option(
+        False,
+        "--scheduled",
+        help="How the launchd job runs it: wait for Ollama, skip if today is done, notify.",
+    ),
 ) -> None:
     """Run the daily pipeline and write today's digest."""
-    from datetime import date
+    from datetime import date, datetime
 
     from radar import services
 
     if mode not in (None, "single", "multi"):
         typer.echo("--mode must be single or multi.")
         raise typer.Exit(code=1)
+    if scheduled:
+        from radar.schedule import notify
+
+        typer.echo(f"=== {datetime.now():%Y-%m-%d %H:%M:%S} scheduled run ===")
+        out = services.scheduled_daily(_ctx(), mode=mode)
+        typer.echo(f"{out['status']}: {out['message']}")
+        if out["status"] == "done":
+            _print_daily(out["result"])
+            notify("AI Research Radar", f"Today's digest is ready: {out['message']}.")
+        elif out["status"] == "failed":
+            notify("AI Research Radar", f"The morning digest failed: {out['message'][:120]}")
+            raise typer.Exit(code=1)
+        return
     if not no_collect:
         typer.echo("Collecting from all sources (this takes a few minutes)...")
     result = services.daily(
@@ -253,8 +327,14 @@ def daily(
         collect=not no_collect,
         mode=mode,
     )
+    _print_daily(result)
+
+
+def _print_daily(result) -> None:
     for line in result.collect_log:
         typer.echo(f"  {line}")
+    for line in result.profile_log:
+        typer.secho(f"  {line}", fg=typer.colors.CYAN)
     typer.echo(f"\n{result.candidates} candidates -> {len(result.picks)} picks:")
     for n, p in enumerate(result.picks, 1):
         typer.echo(f"{n}. [{p['slot']}] {p['title']} ({p['item_id']})")
@@ -265,21 +345,197 @@ def daily(
         typer.secho(f"  * {note}", fg=typer.colors.YELLOW)
     if result.stats:
         typer.secho(f"Agents: {result.stats}", fg=typer.colors.BRIGHT_BLACK)
+    for line in result.watch_log:
+        typer.secho(f"  {line}", fg=typer.colors.CYAN)
     timing = ", ".join(f"{k} {v}s" for k, v in result.timings.items())
     typer.secho(f"\nTimings: {timing}", fg=typer.colors.BRIGHT_BLACK)
     typer.echo(f"Digest written to {result.path}")
 
 
-@app.command()
-def rate(item_id: str, value: str) -> None:
-    """Rate a digest item: useful, not_relevant or skipped."""
-    _todo("M4")
+schedule_app = typer.Typer(help="M6: the morning digest job (a macOS launchd agent).")
+app.add_typer(schedule_app, name="schedule")
+
+
+@schedule_app.command("install")
+def schedule_install(
+    at: str = typer.Option("07:30", help="Time of day, HH:MM (24-hour)."),
+    mode: str | None = typer.Option(None, help="single or multi (default: DIGEST_MODE)."),
+    weekdays: bool = typer.Option(False, "--weekdays", help="Monday to Friday only."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the plist, change nothing."),
+) -> None:
+    """Install (or update) the launch agent that runs `radar daily` every morning."""
+    import plistlib
+    import sys
+
+    from radar import schedule
+
+    hour, _, minute = at.partition(":")
+    repo = Path.cwd().resolve()
+    if not (repo / "pyproject.toml").exists():
+        typer.echo("Run this from the project folder (where pyproject.toml is).")
+        raise typer.Exit(code=1)
+    try:
+        uv = schedule.find_uv()
+        plist = schedule.build_plist(repo, uv, int(hour), int(minute or 0), mode, weekdays)
+    except (ValueError, FileNotFoundError) as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1) from e
+    if dry_run or sys.platform != "darwin":
+        if sys.platform != "darwin":
+            typer.echo("(Not macOS: printing the plist instead of installing it.)")
+        typer.echo(plistlib.dumps(plist).decode())
+        return
+    path = schedule.install(plist)
+    days = "Monday to Friday" if weekdays else "every day"
+    typer.echo(f"Installed {path}")
+    typer.echo(
+        f"`radar daily --scheduled` will run {days} at {int(hour):02d}:{int(minute or 0):02d}"
+    )
+    typer.echo(f"Log: {plist['StandardOutPath']}. Try it now with `radar schedule run`.")
+
+
+@schedule_app.command("status")
+def schedule_status() -> None:
+    """Is the job installed and loaded, when does it run, and how did the last run end?"""
+    from radar import schedule
+
+    st = schedule.status()
+    if not st["installed"]:
+        typer.echo("Not installed. Run `radar schedule install`.")
+        return
+    typer.echo(f"plist:   {st['plist']}")
+    typer.echo(f"loaded:  {st['loaded']}  state: {st.get('state', '-')}  runs: {st.get('runs', 0)}")
+    typer.echo(f"last exit code: {st.get('last_exit', '-')}")
+    typer.echo(f"when:    {st['when']}")
+    typer.echo(f"command: {st['command']}")
+    typer.echo(f"log:     {st['log']}")
+
+
+@schedule_app.command("run")
+def schedule_run() -> None:
+    """Start the job now, through launchd (tests the real setup; output goes to the log)."""
+    from radar import schedule
+
+    try:
+        schedule.run_now()
+    except RuntimeError as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1) from e
+    typer.echo(f"Started. Follow it with: tail -f data/logs/{schedule.LOG_NAME}")
+
+
+@schedule_app.command("remove")
+def schedule_remove() -> None:
+    """Unload the job and delete its plist."""
+    from radar import schedule
+
+    typer.echo("Removed." if schedule.remove() else "Nothing was installed.")
 
 
 @app.command()
-def watchlist() -> None:
-    """Show the early-buzz watchlist."""
-    _todo("M4")
+def health() -> None:
+    """Check the database, Ollama and both models (what the morning job checks first)."""
+    from radar import services
+
+    ctx = _ctx()
+    h = services.health(ctx)
+    typer.echo(f"database: {'ok' if h['db'] else 'NOT OK'}")
+    typer.echo(f"ollama:   {'ok' if h['ollama'] else 'NOT REACHABLE'} ({ctx.settings.ollama_host})")
+    for m, ok in h["models"].items():
+        typer.echo(f"model {m}: {'ok' if ok else f'missing (ollama pull {m})'}")
+    if h["error"]:
+        typer.echo(h["error"])
+    if not h["ok"]:
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def rate(
+    item_id: str,
+    value: str = typer.Argument(..., help="useful, not_relevant or skipped."),
+) -> None:
+    """Rate a digest item. Applied to your profile at the next `radar daily`."""
+    from radar import services
+
+    try:
+        r = services.rate(_ctx(), item_id, value)
+    except ValueError as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1) from None
+    where = f" (shown in the {r['slot']} slot)" if r["slot"] else " (not from a digest)"
+    typer.echo(f"Rated {item_id} {value}{where}.")
+
+
+@app.command()
+def watchlist(
+    status: str | None = typer.Option(None, help="watching, established or dropped."),
+) -> None:
+    """Show the early-buzz watchlist: upvoted papers waiting to prove themselves in citations."""
+    from radar import services
+
+    rows = services.watchlist(_ctx(), status)
+    if not rows:
+        typer.echo("The watchlist is empty. Early-buzz picks are added by `radar daily`.")
+        return
+    for w in rows:
+        typer.echo(f"[{w['status']}] {w['item_id']}  {w['title'][:70]}")
+        detail = f"added {w['added_at']}, citations then {w['citations_at_add']}"
+        if w["status"] == "watching":
+            detail += f", re-check after {w['recheck_after']}"
+        if w["note"]:
+            detail += f"; last check: {w['note']}"
+        typer.secho(f"    {detail}", fg=typer.colors.BRIGHT_BLACK)
+
+
+@app.command()
+def profile(
+    update: bool = typer.Option(False, "--update", help="Apply pending ratings now."),
+    no_agent: bool = typer.Option(
+        False, "--no-agent", help="With --update: skip the Profile agent (no model call)."
+    ),
+    reset: bool = typer.Option(False, "--reset", help="Back to the default profile."),
+) -> None:
+    """Show the interest profile: topics, scoring weights, reserved slots, recent changes."""
+    from radar import services
+
+    ctx = _ctx()
+    if reset:
+        services.reset_profile(ctx)
+        typer.echo("Profile reset to the defaults (your ratings are kept).")
+    if update:
+        for line in services.update_profile(ctx, agent=not no_agent).lines():
+            typer.secho(line, fg=typer.colors.CYAN)
+        typer.echo("")
+    p = services.profile(ctx)
+    typer.echo("Topics:")
+    for t in p["topics"]:
+        typer.echo(f"  - {t}")
+    typer.echo("Weights: " + ", ".join(f"{k} {v:.3f}" for k, v in p["weights"].items()))
+    typer.echo(f"Reserved slots: {p['reserved_slots']} -> {p['reserved_plan']}")
+    for slot, st in p["slot_stats"].items():
+        typer.echo(f"  {slot}: {st['useful']} useful of {st['rated']} rated")
+    typer.echo(f"Ratings applied: {p['ratings_applied']}, waiting: {p['pending_ratings']}")
+    if p["changes"]:
+        typer.echo("Recent changes:")
+        for c in p["changes"]:
+            typer.secho(f"  {c['at']} {c['kind']}: {c['detail']}", fg=typer.colors.BRIGHT_BLACK)
+
+
+@app.command()
+def gaps() -> None:
+    """Questions the agent couldn't answer. Each run searches arXiv for them."""
+    from radar import services
+
+    rows = services.gaps(_ctx())
+    if not rows:
+        typer.echo("No open gaps.")
+        return
+    for g in rows:
+        typer.echo(f"{g['id']}. {g['question'] or g['topic']}")
+        typer.secho(
+            f"    since {g['created_at']}, searched {g['attempts']} time(s)",
+            fg=typer.colors.BRIGHT_BLACK,
+        )
 
 
 @app.command()
@@ -352,28 +608,155 @@ def compare_agents(
     typer.echo(f"Saved to {report['path']}")
 
 
+def _local_time(iso: str) -> str:
+    from datetime import datetime
+
+    return datetime.fromisoformat(iso).astimezone().strftime("%m-%d %H:%M:%S")
+
+
+def _duration(ms: float) -> str:
+    return f"{ms:.0f} ms" if ms < 1000 else f"{ms / 1000:.1f} s"
+
+
+@app.command()
+def calls(
+    limit: int = typer.Option(30, "--limit", "-n", help="How many calls to show."),
+    name: str = typer.Option("", help="Only calls whose name contains this, e.g. arxiv."),
+    kind: str = typer.Option("", help="Only one kind: service, source, mcp or agent_tool."),
+    errors: bool = typer.Option(False, "--errors", help="Only calls that failed."),
+    top: bool = typer.Option(False, "--top", help="Only top-level calls (one per run)."),
+    tree: str = typer.Option(
+        "", help="Show one run as a tree: a call ID from the list, or 'last'."
+    ),
+    stats: bool = typer.Option(False, "--stats", help="Counts, errors and timings per name."),
+    days: int = typer.Option(7, help="--stats only: how many days back."),
+    show_args: bool = typer.Option(False, "--args", help="Also print each call's arguments."),
+) -> None:
+    """The local tool-call log: what ran, with what arguments, how long it took, what failed.
+
+    Every traced call is logged here (TOOL_LOG=true), with or without LangSmith. When LangSmith
+    is on, `--tree` also prints the trace ID to paste into LangSmith's search.
+    """
+    from radar import services
+
+    ctx = _ctx()
+    if stats:
+        rows = services.call_stats(ctx, days)
+        if not rows:
+            typer.echo("No calls logged yet.")
+        for r in rows:
+            err = f"  {r['errors']} failed" if r["errors"] else ""
+            typer.echo(
+                f"{r['calls']:>5}x  {r['name']:<34} avg {_duration(r['avg_ms']):>8}"
+                f"  max {_duration(r['max_ms']):>8}{err}"
+            )
+        return
+    if tree:
+        rows = services.call_tree(ctx, tree)
+        if not rows:
+            typer.echo(f"No call {tree!r} in the log.")
+            raise typer.Exit(code=1)
+        for r in rows:
+            _print_call(r, indent="  " * r["depth"], show_args=show_args)
+        trace = rows[0]["langsmith_trace_id"]
+        typer.secho(
+            f"\nLangSmith trace: {trace}"
+            if trace
+            else "\n(not traced to LangSmith: tracing was off)",
+            fg=typer.colors.BRIGHT_BLACK,
+        )
+        return
+    rows = services.calls(ctx, limit, name or None, kind or None, errors, top)
+    if not rows:
+        typer.echo("No calls logged yet. Run something (e.g. `radar search ...`), then try again.")
+    for r in reversed(rows):  # oldest first, so the newest ends up next to the prompt
+        nested = "↳ " if r["parent_id"] else ""  # ran inside another call; see --tree
+        _print_call(r, indent=nested, show_args=show_args, show_id=True)
+
+
+def _print_call(r: dict, indent: str = "", show_args: bool = False, show_id: bool = False) -> None:
+    status = (
+        typer.style("ERROR", fg=typer.colors.RED) if r["error"] else typer.style("ok", fg="green")
+    )
+    head = f"{_local_time(r['started_at'])}  {indent}{r['name']}  {_duration(r['duration_ms'])}"
+    ident = typer.style(f"  [{r['id']}]", fg=typer.colors.BRIGHT_BLACK) if show_id else ""
+    typer.echo(f"{head}  {status}{ident}")
+    detail = r["error"] or r["summary"] or ""
+    pad = " " * (16 + len(indent))
+    if detail:
+        typer.secho(f"{pad}-> {detail}", fg=typer.colors.BRIGHT_BLACK)
+    if show_args:
+        typer.secho(f"{pad}args {r['args']}", fg=typer.colors.BRIGHT_BLACK)
+
+
 @app.command("eval")
 def run_eval(
     file: Path = typer.Option(Path("evals/questions.jsonl"), help="Questions with expected IDs."),
-    k: int = typer.Option(5, help="Count a hit if an expected item is in the top k."),
+    target: list[str] = typer.Option(
+        ["retrieval"],
+        "--target",
+        "-t",
+        help="retrieval (fast, no LLM), agent, no_retrieval, or all. Repeat to run several.",
+    ),
+    model: list[str] = typer.Option(
+        [], "--model", "-m", help="Chat model(s) to compare, e.g. -m qwen3.5:9b -m qwen3.5:4b."
+    ),
+    backend: str | None = typer.Option(None, help="Vector backend: sqlite or lance."),
+    k: int = typer.Option(5, help="Count a retrieval hit if an expected item is in the top k."),
+    judge: bool = typer.Option(False, "--judge", help="Also score claim support (LLM judge)."),
+    langsmith: bool | None = typer.Option(
+        None,
+        "--langsmith/--local",
+        help="Upload as LangSmith experiments (default: when LANGSMITH_API_KEY is set).",
+    ),
+    limit: int | None = typer.Option(None, help="Only the first N questions (a quick check)."),
 ) -> None:
-    """Retrieval eval: recall@k over a question file (LangSmith version comes in M6)."""
-    from radar import services
+    """M6 eval suite: retrieval, the agent and the no-retrieval baseline, scored the same way
+    locally and as LangSmith experiments. Writes evals/results/eval-*.md."""
+    import os
+
+    from radar import evals
+    from radar.context import AppContext, make_vector_index
 
     if not file.exists():
         typer.echo(f"{file} not found. Copy evals/questions.example.jsonl and fill it in.")
         raise typer.Exit(code=1)
+    targets = list(evals.TARGETS) if "all" in target else target
+    bad = [t for t in targets if t not in evals.TARGETS]
+    if bad:
+        typer.echo(f"Unknown target(s) {bad}; use {', '.join(evals.TARGETS)} or all.")
+        raise typer.Exit(code=1)
     ctx = _ctx()
-    report = services.eval_retrieval(ctx, file, k=k)
-    for r in report["results"]:
-        mark = "hit " if r["hit"] else "MISS"
-        typer.echo(f"{mark}  {r['question']}")
-        if not r["hit"]:
-            typer.echo(f"      expected {r['expected']}, got {r['got']}")
-    typer.echo(
-        f"\nrecall@{k} = {report['recall']:.2f} over {len(report['results'])} questions"
-        f" ({ctx.settings.vector_backend} backend)"
+    if backend:
+        settings = ctx.settings.model_copy(update={"vector_backend": backend})
+        ctx = AppContext(settings, ctx.conn, ctx.embeddings, make_vector_index(settings, ctx.conn))
+    if langsmith is None:
+        langsmith = bool(os.environ.get("LANGSMITH_API_KEY"))
+    if langsmith and not os.environ.get("LANGSMITH_API_KEY"):
+        typer.echo("--langsmith needs LANGSMITH_API_KEY in .env.")
+        raise typer.Exit(code=1)
+    slow = [t for t in targets if t != "retrieval"]
+    if slow:
+        typer.echo(f"Running {', '.join(slow)} on local Qwen: expect about a minute per question.")
+    report = evals.run_suite(
+        ctx,
+        file,
+        targets,
+        models=model or None,
+        k=k,
+        judge=judge,
+        use_langsmith=langsmith,
+        limit=limit,
     )
+    if langsmith:
+        d = report["dataset"]
+        typer.echo(
+            f"LangSmith dataset {d['dataset']}: {d['added']} added, {d['updated']} updated,"
+            f" {d['removed']} removed."
+        )
+    typer.echo()
+    typer.echo(report["markdown"].split("\n## ")[0])  # the summary table
+    typer.echo(f"Full report: {report['path']}")
 
 
 if __name__ == "__main__":

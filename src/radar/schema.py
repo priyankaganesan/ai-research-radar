@@ -34,6 +34,7 @@ class Passage:
     published: str  # ISO date; a string so graph state stays JSON-friendly
     text: str
     score: float
+    section: str | None = None  # M5: set when the passage comes from a full-text section
 
 
 Slot = Literal["main", "early_buzz", "lab_launch"]

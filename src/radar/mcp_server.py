@@ -22,13 +22,15 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from radar.context import AppContext
+from radar.tracing import traced
 
 log = logging.getLogger("radar.mcp")
 
 INSTRUCTIONS = """AI Research Radar: a local store of recent AI papers and lab posts, searched \
 with hybrid (vector + keyword) retrieval. Start with store_search. search_arxiv and \
-semantic_scholar_lookup search live and save what they find into the store. ask runs the \
-full local Q&A agent (slow: it calls a local model several times)."""
+semantic_scholar_lookup search live and save what they find into the store. fetch_full_text \
+reads inside one paper (its sections). ask runs the full local Q&A agent (slow: it calls a \
+local model several times)."""
 
 # Hints the client shows the user. The live-search tools write to the store, so they're not
 # read-only; a careful client can ask before calling them.
@@ -39,6 +41,11 @@ ANNOTATIONS = {
     ),
     "semantic_scholar_lookup": ToolAnnotations(
         title="Search Semantic Scholar (saves results to the store)",
+        readOnlyHint=False,
+        openWorldHint=True,
+    ),
+    "fetch_full_text": ToolAnnotations(
+        title="Read a paper's full text (downloads and saves it)",
         readOnlyHint=False,
         openWorldHint=True,
     ),
@@ -57,10 +64,14 @@ def build_server(get_ctx: Callable[[], AppContext], digests_dir: Path | None = N
     for tool in make_tools(ctx).values():
         t = to_fastmcp(tool)
         t.annotations = ANNOTATIONS.get(tool.name)
+        # A parent run for the MCP request, so a call from Claude Code shows up in LangSmith and
+        # in `radar calls` as "mcp.<tool>", with the LangChain tool run nested inside it.
+        t.fn = traced(f"mcp.{tool.name}", "tool", kind="mcp")(t.fn)
         tools.append(t)
     mcp = FastMCP("radar", instructions=INSTRUCTIONS, tools=tools)
 
     @mcp.tool(annotations=ToolAnnotations(title="Get one item", readOnlyHint=True))
+    @traced("mcp.get_item", "tool", kind="mcp")
     def get_item(item_id: str) -> dict:
         """Get one paper or post from the store: title, abstract, authors, link, date, TLDR,
         and its latest attention signals (Hugging Face upvotes, citations, HN points).
@@ -80,6 +91,7 @@ def build_server(get_ctx: Callable[[], AppContext], digests_dir: Path | None = N
     agent = None  # built on first use: it loads the chat model and the checkpointer
 
     @mcp.tool(annotations=ToolAnnotations(title="Ask the Radar agent", readOnlyHint=True))
+    @traced("mcp.ask", "chain", kind="mcp")
     def ask(question: str, thread_id: str | None = None) -> dict:
         """Ask the Radar Q&A agent. It searches, checks its evidence and answers with
         citations, or says it can't answer. Runs on a local model, so it takes a while.
@@ -95,6 +107,7 @@ def build_server(get_ctx: Callable[[], AppContext], digests_dir: Path | None = N
         return {"answer": result.answer, "cited": result.cited, "thread_id": result.thread_id}
 
     @mcp.resource("radar://digest/latest", mime_type="text/markdown")
+    @traced("mcp.resource.digest_latest", "tool", kind="mcp")
     def latest_digest() -> str:
         """The most recent daily digest (Markdown)."""
         files = sorted(digests_dir.glob("*.md")) if digests_dir.exists() else []
@@ -103,11 +116,37 @@ def build_server(get_ctx: Callable[[], AppContext], digests_dir: Path | None = N
         return files[-1].read_text()
 
     @mcp.resource("radar://stats", mime_type="application/json")
+    @traced("mcp.resource.stats", "tool", kind="mcp")
     def stats() -> dict:
         """How many items and vectors the store holds, and which vector backend is active."""
         return services.stats(ctx)
 
+    @mcp.tool(annotations=ToolAnnotations(title="Rate a digest item", readOnlyHint=False))
+    @traced("mcp.rate", "tool", kind="mcp")
+    def rate(item_id: str, value: str) -> dict:
+        """Rate an item from the daily digest. Ratings tune the reader's interest profile at
+        the next daily run.
+
+        Args:
+            item_id: the item's ID, e.g. "2401.10774"
+            value: "useful", "not_relevant" or "skipped"
+        """
+        return services.rate(ctx, item_id, value)
+
+    @mcp.resource("radar://watchlist", mime_type="application/json")
+    @traced("mcp.resource.watchlist", "tool", kind="mcp")
+    def watchlist() -> list[dict]:
+        """Early-buzz papers being watched, and which became established or were dropped."""
+        return services.watchlist(ctx)
+
+    @mcp.resource("radar://profile", mime_type="application/json")
+    @traced("mcp.resource.profile", "tool", kind="mcp")
+    def interest_profile() -> dict:
+        """The reader's interest profile: topics, scoring weights, reserved slots."""
+        return services.profile(ctx)
+
     @mcp.prompt()
+    @traced("mcp.prompt.explain_paper", "prompt", kind="mcp")
     def explain_paper(item_id: str) -> str:
         """Explain one paper from the store for a practitioner."""
         return (

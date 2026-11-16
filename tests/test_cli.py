@@ -17,6 +17,9 @@ def test_help_lists_commands():
         "daily",
         "rate",
         "watchlist",
+        "profile",
+        "gaps",
+        "calls",
         "eval",
         "reindex",
         "compare-backends",
@@ -41,10 +44,13 @@ def test_init_db(tmp_path):
     assert (tmp_path / "radar.db").exists()
 
 
-def test_unbuilt_commands_say_so():
+def test_rate_unknown_item_fails_cleanly(monkeypatch):
+    from conftest import FakeEmbeddings
+
+    monkeypatch.setattr("radar.models.get_embeddings", lambda settings=None: FakeEmbeddings())
     result = runner.invoke(app, ["rate", "x", "useful"])
     assert result.exit_code == 1
-    assert "M4" in result.output
+    assert "No item 'x'" in result.output
 
 
 def test_search_on_empty_store(monkeypatch):

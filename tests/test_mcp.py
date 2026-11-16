@@ -29,15 +29,19 @@ def test_server_lists_tools_resources_and_prompts(filled_ctx, tmp_path):
     tools, resources, prompts = asyncio.run(go())
     assert set(tools) == {
         "store_search",
+        "fetch_full_text",
         "search_arxiv",
         "semantic_scholar_lookup",
         "get_item",
         "ask",
+        "rate",
     }
     assert tools["store_search"].annotations.readOnlyHint is True
     assert tools["search_arxiv"].annotations.readOnlyHint is False  # it writes to the store
     assert "query" in tools["store_search"].inputSchema["properties"]
     assert "radar://digest/latest" in resources
+    assert {"radar://watchlist", "radar://profile"} <= set(resources)
+    assert tools["rate"].annotations.readOnlyHint is False
     assert prompts == ["explain_paper"]
 
 

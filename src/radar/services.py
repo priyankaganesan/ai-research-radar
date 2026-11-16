@@ -6,7 +6,7 @@ Nothing outside this module builds graphs or touches the store directly.
 import json
 import sqlite3
 import uuid
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -23,7 +23,9 @@ from radar.schema import Item, Passage
 from radar.sources import arxiv, hackernews, hf_papers, lab_blogs, semantic_scholar
 from radar.sources.http import SourceUnavailable
 from radar.store import items as item_store
+from radar.store import memory
 from radar.store import signals as signal_store
+from radar.tracing import passages_as_documents, traced
 
 
 @dataclass
@@ -34,8 +36,10 @@ class AskResult:
     trace: list[dict] = field(default_factory=list)
     passages: list[dict] = field(default_factory=list)
     verification: list[dict] = field(default_factory=list)
+    full_texts: list[dict] = field(default_factory=list)  # M5: fetched after this question
 
 
+@traced("services.ingest", "chain")
 def ingest(
     ctx: AppContext,
     days: int = 7,
@@ -88,6 +92,7 @@ def _s2_client(ctx: AppContext):
     return semantic_scholar.make_client(ctx.settings.semantic_scholar_api_key)
 
 
+@traced("services.ingest_hf", "chain")
 def ingest_hf(ctx: AppContext, days: int = 3, client=None) -> SourceReport:
     """Hugging Face Daily Papers from the last `days` days, with today's upvote counts."""
     papers = hf_papers.fetch_recent(days, client)
@@ -99,6 +104,7 @@ def ingest_hf(ctx: AppContext, days: int = 3, client=None) -> SourceReport:
     return SourceReport("hf", fetched=len(papers), added=added, signals=len(papers))
 
 
+@traced("services.ingest_labs", "chain")
 def ingest_labs(ctx: AppContext, days: int = 14, client=None) -> SourceReport:
     """Posts from the AI lab feeds in LAB_FEEDS. A broken feed is reported, not fatal."""
     got = lab_blogs.fetch_all(ctx.settings.lab_feeds, days, client)
@@ -106,6 +112,7 @@ def ingest_labs(ctx: AppContext, days: int = 14, client=None) -> SourceReport:
     return SourceReport("labs", fetched=len(got.items), added=added, errors=got.errors)
 
 
+@traced("services.ingest_hn", "chain")
 def ingest_hn(
     ctx: AppContext, days: int = 2, min_points: int | None = None, client=None, s2_client=None
 ) -> SourceReport:
@@ -159,6 +166,7 @@ def ingest_hn(
     return report
 
 
+@traced("services.enrich", "chain")
 def enrich(ctx: AppContext, days: int = 30, limit: int = 500, client=None) -> SourceReport:
     """Citation counts and TLDRs from Semantic Scholar for recent arXiv papers in the store."""
     since = (date.today() - timedelta(days=days)).isoformat()
@@ -170,6 +178,8 @@ def enrich(ctx: AppContext, days: int = 30, limit: int = 500, client=None) -> So
             (since, limit),
         )
     ]
+    # M4: watched early-buzz papers need fresh citation counts even once they're older.
+    ids += [i for i in memory.watching_ids(ctx.conn) if i not in ids and ":" not in i]
     found = semantic_scholar.lookup_arxiv(ids, client or _s2_client(ctx)) if ids else {}
     today = date.today()
     with ctx.conn:
@@ -188,22 +198,26 @@ def enrich(ctx: AppContext, days: int = 30, limit: int = 500, client=None) -> So
     return SourceReport("s2", fetched=len(ids), signals=len(found))
 
 
+@traced("services.show", "tool")
 def show(ctx: AppContext, item_id: str) -> tuple[Item, dict] | None:
     """One item with its latest signals, for `radar show`."""
     item = item_store.get_item(ctx.conn, item_id)
     return (item, signal_store.latest(ctx.conn, item_id)) if item else None
 
 
+@traced("services.search", "retriever", process_outputs=passages_as_documents)
 def search(
     ctx: AppContext, query: str, k: int = 5, kind: str | None = None, since: str | None = None
 ) -> list[Passage]:
     return hybrid_search(ctx.conn, ctx.embeddings, ctx.vectors, query, k=k, kind=kind, since=since)
 
 
+@traced("services.get_item", "tool")
 def get_item(ctx: AppContext, item_id: str) -> Item | None:
     return item_store.get_item(ctx.conn, item_id)
 
 
+@traced("services.stats", "tool")
 def stats(ctx: AppContext) -> dict:
     return {
         "items": item_store.count(ctx.conn),
@@ -215,6 +229,7 @@ def stats(ctx: AppContext) -> dict:
 ANN_AUTO_ROWS = 5000  # below this a flat scan takes a few ms, so reindex skips the ANN index
 
 
+@traced("services.reindex", "chain")
 def reindex(ctx: AppContext, backend: str, ann: bool = False) -> dict:
     """Rebuild a vector index.
 
@@ -251,6 +266,7 @@ def _lance(ctx: AppContext) -> LanceIndex:
     return make_vector_index(ctx.settings, ctx.conn, "lance")
 
 
+@traced("services.compare_backends", "chain")
 def compare_backends(
     ctx: AppContext,
     questions_file: Path | None = None,
@@ -304,6 +320,7 @@ def compare_backends(
 DEFAULT_DAYS = {"arxiv": 7, "hf": 3, "labs": 14, "hn": 2}
 
 
+@traced("services.collect_all", "chain")
 def collect_all(ctx: AppContext) -> list[str]:
     """Run every source, then Semantic Scholar enrichment. One failing source doesn't stop the
     rest; it's noted in the returned log instead."""
@@ -324,6 +341,31 @@ def collect_all(ctx: AppContext) -> list[str]:
         log.append(f"s2 enrich: {r.signals} papers updated")
     except SourceUnavailable as e:
         log.append(f"s2 enrich: unavailable ({e})")
+    log += collect_gaps(ctx)
+    return log
+
+
+@traced("services.collect_gaps", "chain")
+def collect_gaps(ctx: AppContext, search=None) -> list[str]:
+    """M4: search arXiv for each open knowledge gap (an unanswered question), so the store has
+    something on it next time. A gap counts as resolved once a search adds new items; after
+    GAP_MAX_ATTEMPTS fruitless runs it's left alone (still listed by `radar gaps`)."""
+    from radar.personalize import GAP_MAX_ATTEMPTS
+
+    search = search or arxiv.search
+    log = []
+    for gap in memory.open_gaps(ctx.conn):
+        if gap["attempts"] >= GAP_MAX_ATTEMPTS:
+            continue
+        try:
+            found = search(gap["topic"], max_results=5)
+        except SourceUnavailable as e:
+            log.append(f"gap {gap['id']}: arXiv unavailable ({e})")
+            break
+        added = index_items(ctx.conn, ctx.embeddings, ctx.vectors, found)
+        with ctx.conn:
+            memory.gap_searched(ctx.conn, gap["id"], found_new=added > 0)
+        log.append(f"gap {gap['id']} ({gap['topic'][:50]}): {added} new item(s)")
     return log
 
 
@@ -338,14 +380,18 @@ class DailyResult:
     candidates: int = 0
     notes: list[str] = field(default_factory=list)
     team_log: list[dict] = field(default_factory=list)
+    profile_log: list[str] = field(default_factory=list)
+    watch_log: list[str] = field(default_factory=list)
 
 
+@traced("services.daily", "chain")
 def daily(
     ctx: AppContext,
     on: date | None = None,
     collect: bool = True,
     mode: str | None = None,
     llm: BaseChatModel | None = None,
+    learn: bool = True,
 ) -> DailyResult:
     """Run the daily graph and write the digest. mode: "single" (M2) or "multi" (M2.5)."""
     from radar.graphs.daily import build_daily_graph
@@ -353,7 +399,9 @@ def daily(
 
     mode = mode or ctx.settings.digest_mode
     llm = llm or get_chat_model(ctx.settings)  # thinking off: summaries don't need it
-    graph = build_daily_graph(ctx, llm, collect=collect_all if collect else None, mode=mode)
+    graph = build_daily_graph(
+        ctx, llm, collect=collect_all if collect else None, mode=mode, learn=learn
+    )
     on = on or date.today()
     state = graph.invoke({"date": on.isoformat()}, config={"run_name": f"radar-daily-{mode}"})
     return DailyResult(
@@ -366,7 +414,303 @@ def daily(
         candidates=len(state["candidates"]),
         notes=state.get("notes", []),
         team_log=state.get("team_log", []),
+        profile_log=state.get("profile_log", []),
+        watch_log=state.get("watch_log", []),
     )
+
+
+# ---- M6: the scheduled morning run ---------------------------------------------------------
+
+
+@traced("services.health", "tool")
+def health(ctx: AppContext, client=None) -> dict:
+    """Is everything the agent needs reachable? The database, Ollama, and both models.
+    (The M7 web app's /api/health can use this too.)"""
+    import httpx
+
+    out = {"db": False, "ollama": False, "models": {}, "error": ""}
+    try:
+        ctx.conn.execute("SELECT 1").fetchone()
+        out["db"] = True
+    except sqlite3.Error as e:
+        out["error"] = f"database: {e}"
+    try:
+        client = client or httpx.Client(timeout=5)
+        tags = client.get(f"{ctx.settings.ollama_host}/api/tags").json()
+        out["ollama"] = True
+        have = {m["name"] for m in tags.get("models", [])}
+        for m in (ctx.settings.chat_model, ctx.settings.embed_model):
+            # Ollama lists "name:tag"; a model asked for without a tag means ":latest"
+            out["models"][m] = m in have or f"{m}:latest" in have
+    except (httpx.HTTPError, ValueError) as e:
+        out["error"] = f"Ollama at {ctx.settings.ollama_host}: {type(e).__name__}"
+    out["ok"] = out["db"] and out["ollama"] and all(out["models"].values())
+    return out
+
+
+@traced("services.scheduled_daily", "chain")
+def scheduled_daily(
+    ctx: AppContext,
+    mode: str | None = None,
+    wait_s: float = 600,
+    poll_s: float = 30,
+    sleep=None,
+    run_daily=None,
+    check=None,
+) -> dict:
+    """What the launchd job runs each morning (`radar daily --scheduled`).
+
+    Differences from a manual `radar daily`:
+    - Skip if today already has a digest (e.g. you ran it by hand, or launchd ran it on wake).
+    - Wait up to `wait_s` for Ollama: right after the Mac wakes, Wi-Fi and Ollama may not be up.
+    - Never raise: return {"status": "done" | "skipped" | "failed", "message": ...}, so the job
+      can log one clear line and post a notification either way.
+    """
+    import time
+
+    sleep = sleep or time.sleep
+    check = check or (lambda: health(ctx))
+    today = date.today().isoformat()
+    if ctx.conn.execute("SELECT 1 FROM digests WHERE date = ? LIMIT 1", (today,)).fetchone():
+        return {"status": "skipped", "message": f"The digest for {today} already exists."}
+    waited = 0.0
+    while not (h := check())["ok"]:
+        if waited >= wait_s:
+            missing = [m for m, ok in h["models"].items() if not ok]
+            why = h["error"] or f"models not pulled: {', '.join(missing)}"
+            return {"status": "failed", "message": f"Not ready after {waited:.0f}s: {why}"}
+        sleep(poll_s)
+        waited += poll_s
+    try:
+        result = (run_daily or daily)(ctx, mode=mode)
+    except Exception as e:  # logged and notified rather than a silent non-zero exit
+        return {"status": "failed", "message": f"{type(e).__name__}: {e}"}
+    return {
+        "status": "done",
+        "message": f"{len(result.picks)} picks for {result.date}",
+        "path": result.path,
+        "result": result,
+    }
+
+
+# ---- M4: ratings, profile, watchlist, gaps --------------------------------------------------
+
+
+@traced("services.rate", "tool")
+def rate(ctx: AppContext, item_id: str, value: str, on: date | None = None) -> dict:
+    """Record a rating. It's applied to the profile at the next `radar daily` (or
+    `radar profile --update`), so rating several items in a row is cheap."""
+    if not item_store.exists(ctx.conn, item_id):
+        raise ValueError(f"No item {item_id!r} in the store.")
+    with ctx.conn:
+        slot = memory.add_rating(ctx.conn, item_id, value, on or date.today())
+    return {"item_id": item_id, "value": value, "slot": slot}
+
+
+@traced("services.watchlist", "tool")
+def watchlist(ctx: AppContext, status: str | None = None) -> list[dict]:
+    return memory.get_watchlist(ctx.conn, status)
+
+
+@traced("services.profile", "tool")
+def profile(ctx: AppContext) -> dict:
+    """The interest profile as the digest will use it, plus recent changes."""
+    from radar import feedback
+    from radar.personalize import load_profile
+
+    p = load_profile(ctx)
+    return {
+        "topics": p.topics,
+        "weights": p.weights,
+        "reserved_slots": p.reserved_slots,
+        "reserved_plan": feedback.reserved_plan(p.reserved_slots, p.slot_order),
+        "slot_stats": p.slot_stats,
+        "ratings_applied": p.rated_seq,
+        "pending_ratings": len(memory.ratings_since(ctx.conn, p.rated_seq)),
+        "changes": memory.recent_changes(ctx.conn),
+    }
+
+
+@traced("services.update_profile", "chain")
+def update_profile(ctx: AppContext, llm: BaseChatModel | None = None, agent: bool = True):
+    """Apply pending ratings now (the daily run does this too). agent=False skips the LLM."""
+    from radar.models import get_chat_model
+    from radar.personalize import update_profile as run
+
+    if agent and llm is None:
+        llm = get_chat_model(ctx.settings)
+    return run(ctx, llm if agent else None)
+
+
+@traced("services.reset_profile", "chain")
+def reset_profile(ctx: AppContext) -> None:
+    from radar.personalize import reset_profile as run
+
+    run(ctx)
+
+
+@traced("services.gaps", "tool")
+def gaps(ctx: AppContext) -> list[dict]:
+    return memory.open_gaps(ctx.conn)
+
+
+# ---- M5: full text ------------------------------------------------------------------------
+
+
+@dataclass
+class FullTextResult:
+    item_id: str
+    status: str  # "ok" | "failed" | "cached"
+    source: str = ""
+    sections: int = 0
+    chunks: int = 0
+    error: str = ""
+    headings: list[str] = field(default_factory=list)
+
+
+@traced("services.full_text", "chain")
+def full_text(
+    ctx: AppContext, item_id: str, reason: str = "manual", force: bool = False, client=None
+) -> FullTextResult:
+    """Fetch an item's full text, split it into section chunks and index them.
+
+    Already fetched -> nothing to do ("cached") unless `force`. A failed fetch is remembered,
+    so the agent doesn't hammer arXiv for a paper with no HTML or PDF, and retried after
+    FULL_TEXT_RETRY_DAYS.
+    """
+    from radar.rag.chunking import section_chunks
+    from radar.rag.index import replace_section_chunks
+    from radar.sources import full_text as ft
+    from radar.store import full_texts
+
+    item = item_store.get_item(ctx.conn, item_id)
+    if item is None:
+        raise ValueError(f"No item {item_id!r} in the store.")
+    known = full_texts.get(ctx.conn, item_id)
+    if known and not force:
+        if known["status"] == "ok":
+            return FullTextResult(
+                item_id,
+                "cached",
+                known["source"],
+                known["n_sections"],
+                known["n_chunks"],
+                headings=[s["heading"] for s in known["sections"]],
+            )
+        retry_on = date.fromisoformat(known["fetched_at"][:10]) + timedelta(
+            days=ctx.settings.full_text_retry_days
+        )
+        if date.today() < retry_on:
+            return FullTextResult(item_id, "failed", error=known["error"] or "")
+    try:
+        got = ft.fetch(item, client)
+    except SourceUnavailable as e:  # FullTextUnavailable is one too
+        with ctx.conn:
+            full_texts.save_failed(ctx.conn, item_id, str(e), reason)
+        return FullTextResult(item_id, "failed", error=str(e))
+    s = ctx.settings
+    chunks = section_chunks(
+        item.id, item.title, got.sections, s.full_text_chunk_tokens, s.full_text_overlap_tokens
+    )[: s.full_text_max_chunks]
+    replace_section_chunks(ctx.conn, ctx.embeddings, ctx.vectors, item, chunks)
+    sections = [{"heading": x.heading, "text": x.text} for x in got.sections]
+    with ctx.conn:
+        full_texts.save_ok(ctx.conn, item_id, got.source, got.url, sections, len(chunks), reason)
+    return FullTextResult(
+        item_id,
+        "ok",
+        got.source,
+        len(sections),
+        len(chunks),
+        headings=[x.heading for x in got.sections],
+    )
+
+
+def fetch_repeated(ctx: AppContext, cited: list[str]) -> list[dict]:
+    """The M5 trigger: after an answer, fetch the full text of every cited item that has now
+    been cited by FULL_TEXT_AFTER_QUESTIONS questions or more. The question that crosses the
+    line still got its answer from abstracts; the next one about that paper can use the
+    method details. Plain code, not an LLM decision: counting is something code does better.
+    Not traced itself (it runs after every question); a fetch it starts is traced.
+    """
+    from radar.store import full_texts
+
+    after = ctx.settings.full_text_after_questions
+    if after <= 0 or not cited:
+        return []
+    counts = full_texts.times_cited(ctx.conn, cited)
+    out = []
+    for item_id in cited:
+        n = counts.get(item_id, 0)
+        if n < after or full_texts.get(ctx.conn, item_id):
+            continue
+        try:
+            r = full_text(ctx, item_id, reason=f"cited by {n} questions")
+        except Exception as e:  # never let the background fetch break an answered question
+            r = FullTextResult(item_id, "failed", error=str(e))
+        out.append({**asdict(r), "times_cited": n})
+    return out
+
+
+def full_text_list(ctx: AppContext, limit: int = 50) -> list[dict]:
+    from radar.store import full_texts
+
+    return full_texts.listing(ctx.conn, limit)
+
+
+@traced("services.search_full_text", "retriever", process_outputs=passages_as_documents)
+def search_full_text(ctx: AppContext, item_id: str, query: str, k: int = 3) -> list[Passage]:
+    """The best sections of one item's full text for a query (fetch it first)."""
+    from radar.rag.retrieve import search_item
+
+    return search_item(ctx.conn, ctx.embeddings, item_id, query, k=k)
+
+
+# ---- Tracing: the local tool-call log (not traced itself, so reading it doesn't add rows) ---
+
+
+def calls(
+    ctx: AppContext,
+    limit: int = 30,
+    name: str | None = None,
+    kind: str | None = None,
+    errors_only: bool = False,
+    roots_only: bool = False,
+) -> list[dict]:
+    from radar.store import tool_calls
+
+    return tool_calls.recent(ctx.conn, limit, name, kind, errors_only, roots_only)
+
+
+def call_tree(ctx: AppContext, call_id: str = "last") -> list[dict]:
+    """Every call under one top-level call. `call_id` may be any call in the tree (or a prefix
+    of its ID); "last" means the most recent top-level call."""
+    from radar.store import tool_calls
+
+    if call_id == "last":
+        latest = tool_calls.recent(ctx.conn, limit=1, roots_only=True)
+        root = latest[0]["id"] if latest else None
+    else:
+        root = tool_calls.find_root(ctx.conn, call_id)
+    return tool_calls.tree(ctx.conn, root) if root else []
+
+
+def call_stats(ctx: AppContext, days: int = 7) -> list[dict]:
+    from datetime import UTC, datetime
+
+    from radar.store import tool_calls
+
+    since = (datetime.now(UTC) - timedelta(days=days)).isoformat(timespec="seconds")
+    return tool_calls.stats(ctx.conn, since)
+
+
+def _log_question(ctx: AppContext, question: str, state: dict) -> None:
+    """Remember the question; an abstained one becomes a gap (a topic to collect next run)."""
+    cited = state.get("cited") or []
+    with ctx.conn:
+        memory.log_question(
+            ctx.conn, question, bool(cited), cited, gap_topic=state.get("question") or question
+        )
 
 
 class Agent:
@@ -415,9 +759,16 @@ class Agent:
         self.mcp = MCPToolset()
         return self.mcp.tools(list(local))
 
+    @traced("services.Agent.ask", "chain")
     def ask(
-        self, question: str, thread_id: str | None = None, no_retrieval: bool = False
+        self,
+        question: str,
+        thread_id: str | None = None,
+        no_retrieval: bool = False,
+        remember: bool = True,
     ) -> AskResult:
+        """Answer a question. remember=False (evals) skips the long-term side effects: no row in
+        `questions`, no gap for an abstention, no full-text fetch."""
         thread_id = thread_id or uuid.uuid4().hex[:8]
         if no_retrieval:
             # The comparison baseline: same model, no tools, no store.
@@ -427,6 +778,8 @@ class Agent:
             {"messages": [HumanMessage(question)]},
             config={"configurable": {"thread_id": thread_id}, "run_name": "radar-ask"},
         )
+        if remember:
+            _log_question(self.ctx, question, state)
         return AskResult(
             answer=state["answer"],
             cited=state["cited"],
@@ -434,6 +787,7 @@ class Agent:
             trace=state["trace"],
             passages=state["passages"],
             verification=state.get("verification", []),
+            full_texts=fetch_repeated(self.ctx, state.get("cited") or []) if remember else [],
         )
 
 
@@ -444,6 +798,7 @@ def _sqlite_checkpointer(path: Path):
     return SqliteSaver(sqlite3.connect(path, check_same_thread=False))
 
 
+@traced("services.eval_retrieval", "chain")
 def eval_retrieval(ctx: AppContext, questions_file: Path, k: int = 5) -> dict:
     """Retrieval recall@k: for each question, did any expected item appear in the top k?
 

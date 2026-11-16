@@ -6,10 +6,12 @@ from langchain_core.tools import BaseTool, tool
 
 from radar.context import AppContext
 from radar.rag.retrieve import hybrid_search
+from radar.tracing import traced
 
 
 def make_store_search(ctx: AppContext) -> BaseTool:
     @tool
+    @traced("tool.store_search", "tool", kind="agent_tool", langsmith=False)
     def store_search(query: str, since: str | None = None) -> list[dict]:
         """Search the local research store for passages relevant to the query.
 

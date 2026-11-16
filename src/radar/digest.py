@@ -27,5 +27,8 @@ def to_markdown(
         lines.append("")
         lines += [f"- {n}" for n in notes]
         lines.append("")
-    lines.append("Rate an item: `radar rate ITEM_ID useful|not_relevant|skipped` (M4).")
+    lines.append(
+        "Rate an item: `radar rate ITEM_ID useful|not_relevant|skipped`."
+        " Ratings tune tomorrow's digest (`radar profile` shows how)."
+    )
     return "\n".join(lines) + "\n"

@@ -8,10 +8,12 @@ from radar.context import AppContext
 from radar.rag.index import index_items
 from radar.schema import Passage
 from radar.sources import arxiv
+from radar.tracing import traced
 
 
 def make_search_arxiv(ctx: AppContext) -> BaseTool:
     @tool
+    @traced("tool.search_arxiv", "tool", kind="agent_tool", langsmith=False)
     def search_arxiv(query: str, max_results: int = 5) -> list[dict]:
         """Search arXiv directly for papers not yet in the local store, and save them to it.
 

@@ -14,9 +14,10 @@ The plan for the whole codebase. `CLAUDE.md` holds the rules and design; this fi
 | M2.5 | Multi-agent digest and verification | The digest's `summarize` step becomes Critic → Writer → Verifier agents under a supervisor; Q&A gets the same Verifier for claim-level checks; eval compares single- vs. multi-agent on quality and time | M2 |
 | M3 | More sources | Hugging Face upvotes, Semantic Scholar citations and TLDRs, lab RSS, Hacker News feed into scoring. Collection built first (before M2) so the data is queryable; scoring uses it in M2 | M2 |
 | M4 | Long-term memory and feedback | Ratings update the profile, reserved slots, early-buzz watchlist re-checks, gap logging; a Profile agent turns ratings and gaps into interest updates (uses M2.5's agent pattern) | M2, M3, M2.5 |
+| M4.1 | Trace every call | Services, source fetchers and MCP tools traced to LangSmith (`@traced`); a local `tool_calls` log that works with tracing off; `radar calls` shows runs as trees, errors and timings | M1, M1.6, M3 |
 | M5 | Going deeper | Full-text fetch and section chunking when a paper gets repeated questions | M1 |
 | M7 | FastAPI web UI | `radar serve` opens a local web app: ask with streamed answers and citations, browse and rate the digest, search the store, watchlist | M2, M4 (build before recording the presentation) |
-| M6 | Evals and polish | LangSmith eval suite, model comparisons, scheduled runs, graph diagrams, demo script. Stretch 1: a pgvector backend. Stretch 2: full cloud pipeline (see Stretch goals) | all |
+| M6 | Evals and polish | LangSmith eval suite, model comparisons, scheduled runs, graph diagrams, demo script. Stretch 1: a pgvector backend. Stretch 2: full cloud pipeline (see Stretch goals). Built 2026-11-14: the launchd morning job and the eval suite only; graph diagrams, demo script and both stretch goals left out for now | all |
 
 M3 and M5 are independent of each other; do whichever the next assignment needs first. M1.5 is for learning: it exists to compare two vector stores, not because the agent needs two. M7 comes after M4 because the UI is most useful once there's a digest to rate, and before M6 so the presentation can demo it.
 
@@ -47,7 +48,8 @@ ai-research-radar/
 │   │   ├── hf_papers.py      # daily papers + upvotes
 │   │   ├── semantic_scholar.py  # batch lookup (citations, TLDR) + search
 │   │   ├── lab_blogs.py      # lab blog RSS/Atom feeds -> kind "post"
-│   │   └── hackernews.py     # AI stories via Algolia HN search; arXiv links -> hn_points
+│   │   ├── hackernews.py     # AI stories via Algolia HN search; arXiv links -> hn_points
+│   │   └── full_text.py      # M5: arXiv HTML / PDF / post page -> sections
 │   ├── rag/
 │   │   ├── chunking.py       # abstract = 1 chunk; full text = sections, ~500 tokens, overlap
 │   │   ├── index.py          # embed + write to the vector index and FTS table
@@ -62,9 +64,12 @@ ai-research-radar/
 │   │   ├── fetch_full_text.py
 │   │   └── score_items.py
 │   ├── scoring.py            # pure functions; no LLM
+│   ├── feedback.py           # M4: what a rating means (Rocchio, weight steps, slots); pure
+│   ├── personalize.py        # M4: the profile update run, watchlist re-check
 │   ├── graphs/
 │   │   ├── qa.py             # Q&A ReAct graph
 │   │   ├── daily.py          # fixed-order daily graph
+│   │   ├── agents/           # M2.5 critic, writer, verifier, team; M4 profile
 │   │   └── prompts.py        # all prompt templates in one place
 │   ├── context.py            # AppContext: settings, DB connection, embeddings, vector index
 │   ├── services.py           # ask(), search(), get_item(), digest(), rate(): one layer used by CLI, MCP and web
@@ -76,6 +81,8 @@ ai-research-radar/
 │   │   ├── templates/        # base, ask, digest, search, item, watchlist
 │   │   └── static/           # small CSS; htmx loaded from a pinned CDN version
 │   ├── digest.py             # render digest to Markdown
+│   ├── evals.py              # M6: eval targets, evaluators, LangSmith experiments
+│   ├── schedule.py           # M6: launchd plist + launchctl wrappers
 │   └── cli.py                # typer app: ingest, ask, daily, rate, watchlist, eval
 ├── tests/
 │   ├── conftest.py           # temp DB, fake chat model, fake embeddings, recorded HTTP fixtures
@@ -83,7 +90,7 @@ ai-research-radar/
 │   └── test_*.py
 ├── evals/
 │   ├── questions.jsonl       # ~20 questions with expected paper IDs
-│   └── run.py                # LangSmith evaluate(): recall@5, citation validity
+│   └── results/              # reports written by `radar eval`, compare-backends, compare-agents
 ├── walkthroughs/             # gitignored: plain-language notes per milestone
 └── data/                     # gitignored: radar.db, lance/, digests/YYYY-MM-DD.md
 ```
@@ -129,6 +136,17 @@ The LangGraph checkpointer gets its own file (`data/checkpoints.db`) so short-te
 - **Output:** the top 5 `Passage(paper_id, title, url, published, text, score)`. `k` is configurable.
 - **Filters:** optional date range and category, so "this month's papers" works.
 
+## Full text (M5)
+
+Built 2026-11-14. The optional Docling/Marker exploration is not done.
+- **Sources** (`sources/full_text.py`): arXiv HTML first (`arxiv.org/html/<id>`, LaTeXML: real `<section>`/`<h2>`/`<h3>` structure, formulas as LaTeX from `alttext`), parsed with the standard library's `html.parser`; if there's no HTML (404, or fewer than 2 sections), the PDF with plain PyMuPDF (`pymupdf<2`, so no extra layout/ONNX dependencies), where headings are guessed from lines like "3 Method" with numbering rules (N is followed by N or N+1; after References only appendix letters A, B, ... in order). Lab posts: the post's page, split at `<h2>`/`<h3>`, text before the first heading kept as "Post". References, acknowledgements and similar sections are dropped. IEEE and LinkedIn URLs are refused.
+- **Chunking** (`rag/chunking.section_chunks`): never across a section; sentences packed into ~500-token windows, each starting with the last ~50 tokens of the one before; a tail under 40 tokens joins the previous chunk; each chunk starts with "title / Section: heading" (a contextual header). Max 120 chunks per item.
+- **Storage:** chunks in `chunks` with `kind='section'` and `section` set, next to the item's abstract chunk; FTS and vectors as usual (`rag/index.replace_section_chunks` replaces an item's old section chunks). Migration `007_full_text.sql`: `full_texts(item_id, status, source, url, sections JSON, n_sections, n_chunks, chars, reason, error, fetched_at)`. The sections are kept so they can be re-chunked without fetching again. A failed fetch is remembered and retried after 7 days.
+- **Trigger:** after each answer, `services.fetch_repeated` counts questions whose answer cited each paper (`json_each` over `questions.cited_ids`); at `FULL_TEXT_AFTER_QUESTIONS` (2) it fetches the full text, so the next question about that paper can use method details. Code decides, not the LLM.
+- **Agent tool** `fetch_full_text(item_id, query)`: fetches if needed and returns the 3 best sections of that one paper (`rag/retrieve.search_item`: cosine over that item's vectors read from SQLite + BM25 restricted to its chunks, fused with RRF). Qwen calls it when it has the right paper but the abstract lacks the detail. Also exposed over MCP (not read-only: it downloads and saves).
+- **Q&A changes:** passages carry `section`; the graph keeps several sections of one paper as separate evidence (dedupe key is item + section); prompts show the section and give section passages a 2,400-character budget. Store-wide `hybrid_search` can now return a section chunk as an item's best passage.
+- `radar fulltext ITEM_ID [-q QUERY] [--force]`, `radar fulltext` lists what's fetched.
+
 ## Second vector backend (M1.5)
 
 - **SQLite stays the source of truth.** LanceDB stores only `(chunk_id, vector)`. Filters (`kind`, `since`) are applied in SQLite after the vector search, as with sqlite-vec, so LanceDB needs no filter columns. Anything in LanceDB can be rebuilt from SQLite.
@@ -147,7 +165,7 @@ MCP (Model Context Protocol) is the standard way for AI apps to discover and cal
   - `store_search`, `search_arxiv`, `semantic_scholar_lookup`: the agent's own LangChain tools from `tools/`, converted with `langchain_mcp_adapters.tools.to_fastmcp`, so they're defined once. (Names follow the agent tools rather than the earlier `search_store` draft.)
   - `get_item(item_id)`: full record plus TLDR and latest signals
   - `ask(question, thread_id=None)`: runs the full Q&A graph on local Qwen and returns the cited answer
-- **Resources:** `radar://digest/latest` (newest file in `data/digests/`), `radar://stats`. `radar://watchlist` comes with M4.
+- **Resources:** `radar://digest/latest` (newest file in `data/digests/`), `radar://stats`; M4 added `radar://watchlist`, `radar://profile` and a `rate` tool.
 - **Prompts:** `explain_paper(item_id)`: a ready-made prompt template
 - **Writes are labelled.** The live-search tools save what they find to the store (the Q&A loop relies on that), so they carry the MCP annotation `readOnlyHint=false` and say so in their title; clients can ask the user first. The other tools are marked read-only.
 - **Dogfooding:** a setting `TOOLS_VIA_MCP=true` makes the Q&A graph load its tools from the MCP server with `langchain-mcp-adapters`, instead of importing them directly. Same behavior, but it shows the protocol end to end. `mcp_client.py` keeps the async MCP session on a background event loop and gives the sync graph thin sync wrappers.
@@ -176,10 +194,10 @@ START → rewrite_query → reason ──tool call──▶ tools ──▶ evid
                                                           └── insufficient, steps≥MAX ──▶ abstain ──▶ END
 ```
 - `rewrite_query`: Qwen turns a follow-up into a self-contained search query, using message history.
-- `reason`: Qwen with tools bound (`store_search`, `search_arxiv`, `semantic_scholar_lookup` (M3); later `fetch_full_text`).
+- `reason`: Qwen with tools bound (`store_search`, `search_arxiv`, `semantic_scholar_lookup` (M3), `fetch_full_text` (M5)).
 - `evidence_check`: Qwen with structured output `{sufficient: bool, missing: str}`, given only the question and the passages. It runs with thinking mode on.
 - `answer`: it answers only from passages, and every claim has a `[paper_id]` citation. A post-check drops any citation not in `passages`.
-- `abstain`: it says what is missing, writes a row to `gaps` (M4), and lists the closest papers it found.
+- `abstain`: it says what is missing and lists the closest papers it found. `services.Agent.ask` logs every question to `questions`, and an abstained one to `gaps` (M4; done in the service layer so the graph stays free of store writes).
 - `--no-retrieval` mode: Qwen answers the same question with no tools, for demos and evals.
 
 ## Daily graph (M2)
@@ -203,7 +221,7 @@ START → collect → dedupe → enrich → score → pick → summarize → ren
 - `pick`: 6 main slots, plus 2 reserved slots (early buzz, lab launch). The reserved count comes from `profile`.
 - `summarize`: the only LLM step. Qwen summarizes the 8 picks, with thinking off.
 - `render`: writes `data/digests/YYYY-MM-DD.md`, with each item's label and one-line reason.
-- `recheck_watchlist` (M4): papers past `recheck_after` are re-scored on citations and marked established or dropped.
+- `recheck_watchlist` (M4, built): papers past `recheck_after` are checked on citations gained and marked established or dropped.
 
 ## Multi-agent digest and verification (M2.5)
 
@@ -229,6 +247,23 @@ Built 2026-11-07:
 - Q&A: `VERIFY_ANSWERS=true` or `radar ask --verify` adds a `verify` node after `answer`; unsupported sentences are removed (with a note), and if none survive the graph abstains.
 - `radar compare-agents [--date D] [--file questions.jsonl]` builds the same day's digest in both modes and judges every final claim with a fresh verifier pass; writes `evals/results/agents-*.md`. Critic agreement with ratings waits for M4.
 
+## Long-term memory and feedback (M4)
+
+Built 2026-11-14. The daily graph is now:
+```
+START → collect → learn → candidates → score → pick → summarize → render → recheck_watchlist → END
+```
+- **Ratings** (`radar rate`, MCP `rate`) are stored with the slot the item was shown in and an increasing `seq`. They are applied at the next `learn` step (or `radar profile --update`); `profile.rated_seq` marks what's been applied, so each rating counts once.
+- **Profile vector** (`personalize.profile_vector`): Rocchio feedback, `1.0·mean(topics) + 0.75·mean(useful) − 0.25·mean(not relevant)`, each item counted once with its latest rating. (The plan said "mean of useful papers plus topics, not-relevant push away"; Rocchio is that idea with the textbook weights, so the seed topics stay the anchor.)
+- **Weights** (`feedback.nudge_weights`): each digest pick now stores its score `parts`. A useful rating moves the weights 3% of the way toward that pick's mix of parts; not relevant moves them away. Bounds 0.05 to 0.60, always summing to 1. Skipped ratings and ratings on items with no stored parts (e.g. digests made before M4) don't move weights.
+- **Reserved slots** (`feedback.update_reserved`): every 4 ratings on reserved-slot items is a vote: useful share ≥ 0.6 adds a slot (max 3), ≤ 0.25 removes one (min 1); skipped counts as not useful here. The digest stays at 8 (`main = 8 − reserved`). `slot_order` (smoothed useful rate per slot type) decides which type gets the third slot, or keeps the one slot.
+- **Profile agent** (`graphs/agents/profile.py`, LLM): runs in `learn` when there are ≥ 3 new useful/not-relevant ratings or new gaps. It reads the topics, rated titles and open gaps and proposes `{add, remove, why}`; a code guard applies at most 2 additions and 1 removal, keeps 3 to 10 short topics, and logs refused proposals. The Critic now reads the profile's topics instead of `INTEREST_TOPICS`.
+- **Gaps:** `collect` searches arXiv for each open gap (up to 3 runs per gap); a gap is resolved when a search adds new items to the store. `radar gaps` lists them.
+- **Watchlist:** early-buzz picks are added at `render` (citations at that time recorded). `recheck_watchlist` after 14 days: ≥ 10 new citations → established; otherwise look again weekly; still short at 28 days → dropped. `enrich` also refreshes citations for watched papers.
+- **History:** every profile change is written to `profile_changes` with its reason; `radar profile` shows the current profile and recent changes; `radar profile --reset` goes back to defaults (ratings kept).
+- Tables: migration `005_memory.sql` (`ratings`, `questions`, `gaps`, `watchlist`, `profile_changes`, and `digests.parts`). Store code in `store/memory.py`; pure rules in `feedback.py`; the update run in `personalize.py`.
+- Not done yet: critic agreement with ratings in `compare-agents`.
+
 ## Scoring (M2, tuned in M4)
 
 ```
@@ -252,14 +287,20 @@ radar show ITEM_ID                                         # M3: one item, its T
 radar search "query" [--k 5] [--since YYYY-MM-DD]          # M1 (retrieval only, no LLM)
 radar ask "question" [--no-retrieval] [--thread ID] [--steps]  # M1
 radar rate PAPER_ID useful|not_relevant|skipped            # M4
-radar watchlist                                            # M4
+radar watchlist [--status S]                               # M4
+radar profile [--update] [--no-agent] [--reset]            # M4
+radar gaps                                                 # M4
+radar calls [--tree ID|last] [--errors] [--stats] [--args]  # tracing: the local tool-call log
 radar reindex --backend sqlite|lance [--ann]               # M1.5
 radar compare-backends [--file F] [--k 5] [--sample 50]    # M1.5
 radar mcp [--http]                                         # M1.6
 radar daily [--mode single|multi] [--no-collect] [--date D]  # M2, M2.5
 radar compare-agents [--date D] [--file F]                 # M2.5
 radar serve [--port 8000]                                  # M7
-radar eval [--model ...] [--embed-model ...] [--backend ...]  # M1 basic, M6 full
+radar fulltext [ITEM_ID] [-q QUERY] [--force]               # M5: fetch/list full texts
+radar health                                               # M6: db, Ollama, models reachable
+radar schedule install|status|run|remove [--at HH:MM]     # M6: launchd morning job
+radar eval [-t retrieval|agent|no_retrieval|all] [-m MODEL ...] [--backend B] [--judge] [--local]  # M1 basic, M6 full
 ```
 
 ## Testing
@@ -276,9 +317,21 @@ radar eval [--model ...] [--embed-model ...] [--backend ...]  # M1 basic, M6 ful
 - Metrics: recall@5 for retrieval, the share of citations that point to real store papers, and whether the agent abstains correctly on questions the store can't answer.
 - Run through LangSmith `evaluate()` to compare embedding models, 9B vs. 4B, and retrieval on vs. off.
 
+Built 2026-11-14 (`radar/evals.py`, `radar eval`):
+- **Targets:** `retrieval` (hybrid search only), `agent` (the full Q&A graph), `no_retrieval` (same Qwen, no tools). Agent runs use `Agent.ask(remember=False)`, so evals don't log questions, open gaps or trigger full-text fetches. Live search tools can still add papers to the store.
+- **Evaluators** (plain `(outputs, reference_outputs)` functions, the signature LangSmith accepts): `recall@k`, `mrr`, `cites_expected`, `citation_validity`, `abstain_correct`, `tool_steps`, `seconds`, and with `--judge` an LLM-judge `claim_support` (the Verifier; same-Qwen caveat). A score of None means "doesn't apply" and is left out of averages.
+- **LangSmith:** with `LANGSMITH_API_KEY` set (or `--langsmith`), the question file is synced to the dataset `radar-qa` (the file is the source of truth: adds, updates, deletes), and each target × model runs as an experiment with metadata (model, k, backend, embed model), one question at a time. `--local` runs the same loop with no upload.
+- **Model comparisons:** repeat `-m` (e.g. `-m qwen3.5:9b -m qwen3.5:4b`); `--backend lance` swaps the vector index. Comparing embedding models is left out: it needs every chunk re-embedded (`radar reindex --backend sqlite`), so it's a separate store, not a flag.
+- Every run writes `evals/results/eval-YYYYMMDD-HHMM.md`: a metric × experiment table, a per-question table for answer targets, and retrieval misses.
+
 ## Scheduling (M6)
 
 A `launchd` plist in `~/Library/LaunchAgents/` runs `radar daily` each morning while the Mac is awake. It's per-user and needs no admin rights.
+
+Built 2026-11-14 (`radar/schedule.py`):
+- `radar schedule install [--at 07:30] [--mode multi] [--weekdays]` writes `~/Library/LaunchAgents/com.ai-research-radar.daily.plist` and loads it with `launchctl bootstrap gui/<uid>`. The job runs `uv run --directory <repo> radar daily --scheduled` with absolute paths and a PATH that includes `~/.local/bin` (launchd starts jobs with an almost empty environment). stdout and stderr go to `data/logs/daily.log`. `status` (via `launchctl print`), `run` (`kickstart`) and `remove` (`bootout`) complete it; `--dry-run` prints the plist.
+- `StartCalendarInterval`: a run missed while the Mac sleeps happens on wake; a run missed while it's shut down is skipped.
+- `radar daily --scheduled` (`services.scheduled_daily`): skips a date that already has a digest, waits up to 10 minutes for Ollama and both models (`services.health`, also `radar health`), never raises (returns done / skipped / failed), and posts a macOS notification through `osascript`.
 
 ## Service layer (from M1)
 

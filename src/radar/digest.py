@@ -4,9 +4,17 @@ SLOT_LABEL = {"main": "Top pick", "early_buzz": "Early buzz", "lab_launch": "Lab
 
 
 def to_markdown(
-    on: str, picks: list[dict], mode: str = "single", notes: list[str] | None = None
+    on: str,
+    picks: list[dict],
+    mode: str = "single",
+    notes: list[str] | None = None,
+    review: list[str] | None = None,
 ) -> str:
     lines = [f"# AI Research Radar: {on}", ""]
+    if review:  # safety: say up front when this digest needs a careful read
+        lines.append("> **Needs review.** Read the sources before relying on this digest:")
+        lines += [f"> - {r}" for r in review]
+        lines.append("")
     lines.append(f"{len(picks)} items, ranked by `scoring.py`; summaries by local Qwen ({mode}).")
     lines.append("")
     for n, p in enumerate(picks, 1):

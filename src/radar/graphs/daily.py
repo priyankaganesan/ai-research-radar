@@ -34,13 +34,15 @@ from typing import Any, TypedDict
 from langchain_core.language_models import BaseChatModel
 from langgraph.graph import END, START, StateGraph
 
-from radar import feedback, personalize, scoring
+from radar import feedback, personalize, safety, scoring
 from radar.context import AppContext
 from radar.digest import to_markdown
 from radar.graphs import prompts
 from radar.graphs.qa import keep_valid_citations
 from radar.personalize import item_vectors, load_profile, profile_vector
+from radar.safety import fence
 from radar.store import digests as digest_store
+from radar.store import safety as safety_store
 from radar.store import signals as signal_store
 
 
@@ -57,6 +59,8 @@ class DailyState(TypedDict, total=False):
     team_log: list[dict]  # M2.5: every handoff between the agents
     profile_log: list[str]  # M4: what the learn step changed
     watch_log: list[str]  # M4: watchlist additions and re-checks
+    held: list[dict]  # safety: candidates held back for instruction-like text
+    review: list[str]  # safety: why this digest needs a careful read (empty = it doesn't)
 
 
 def build_daily_graph(
@@ -94,7 +98,13 @@ def build_daily_graph(
     def candidates_node(state: DailyState) -> dict:
         today = date.fromisoformat(state["date"])
         feats = load_candidates(ctx, today, s.digest_window_days)
-        return {"candidates": [asdict(f) for f in feats]}
+        held, notes = screen_candidates(ctx, [f.item_id for f in feats])
+        feats = [f for f in feats if f.item_id not in held]
+        return {
+            "candidates": [asdict(f) for f in feats],
+            "held": [{"item_id": i, "snippet": snip} for i, snip in held.items()],
+            "notes": notes,
+        }
 
     def score_node(state: DailyState) -> dict:
         weights = load_profile(ctx).weights
@@ -108,7 +118,9 @@ def build_daily_graph(
         plan = feedback.reserved_plan(prof.reserved_slots, prof.slot_order)
         size = s.digest_main + s.digest_reserved  # the digest stays at 8; reserved share varies
         scored = [_scored_from(d) for d in state["scored"]]
-        picks = scoring.pick(scored, n_main=size - len(plan), plan=plan)
+        picks = scoring.pick(
+            scored, n_main=size - len(plan), plan=plan, min_relevance=s.digest_min_relevance
+        )
         rows = [
             item_row(ctx, p.scored.features.item_id, p.slot, p.scored.total, p.reason)
             | {"parts": p.scored.parts}
@@ -124,11 +136,14 @@ def build_daily_graph(
         out = []
         for slot in dict.fromkeys(p["slot"] for p in state["picks"]):
             spare = [
-                x for x in scoring.slot_candidates(scored, slot) if x.features.item_id not in chosen
+                x
+                for x in scoring.slot_candidates(scored, slot, s.digest_min_relevance)
+                if x.features.item_id not in chosen
             ][:n]
             for x in spare:
                 fid = x.features.item_id
-                row = item_row(ctx, fid, slot, x.total, scoring.explain(x, slot))
+                why = scoring.explain(x, slot, s.digest_min_relevance)
+                row = item_row(ctx, fid, slot, x.total, why)
                 out.append(row | {"parts": x.parts})
         return out
 
@@ -145,11 +160,22 @@ def build_daily_graph(
             out = llm.invoke(prompts.SUMMARIZE.format(**_item_fields(p)))
             text = ensure_citation(str(out.content).strip(), p)
             picks.append({**p, "summary": text})
-        return {"picks": picks, "stats": {"llm_calls": len(picks)}}
+        return {"picks": picks, "stats": {"llm_calls": len(picks)}, "notes": state.get("notes", [])}
 
     def render_node(state: DailyState) -> dict:
+        from radar.graphs.agents.team import MAX_DROPS
+
         on = state["date"]
-        md = to_markdown(on, state["picks"], mode=mode, notes=state.get("notes"))
+        review = safety.review_reasons(
+            state["picks"],
+            stats=state.get("stats"),
+            min_support=s.review_min_support,
+            max_cut=s.review_max_cut_summaries,
+            held=len(state.get("held") or []),
+            quiet=quiet_sources(ctx),
+            critic_cap=MAX_DROPS if mode == "multi" else None,
+        )
+        md = to_markdown(on, state["picks"], mode=mode, notes=state.get("notes"), review=review)
         path = Path(s.digest_dir) / f"{on}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(md)
@@ -168,8 +194,11 @@ def build_daily_graph(
                 if p.get("summary"):
                     digest_store.save_summary(ctx.conn, p["item_id"], p["summary"], model, mode)
             added = personalize.watch_early_buzz(ctx, state["picks"], date.fromisoformat(on))
+            safety_store.save_review(ctx.conn, on, review)
+            if state.get("team_log"):
+                safety_store.save_critic_decisions(ctx.conn, on, state["team_log"])
         log = [f"watchlist: {added} early-buzz paper(s) added"] if added else []
-        return {"path": str(path), "watch_log": log}
+        return {"path": str(path), "watch_log": log, "review": review}
 
     def recheck_node(state: DailyState) -> dict:
         log = personalize.recheck_watchlist(ctx, date.fromisoformat(state["date"]))
@@ -194,6 +223,53 @@ def build_daily_graph(
     g.add_edge("render", "recheck_watchlist")
     g.add_edge("recheck_watchlist", END)
     return g.compile()
+
+
+# ---- safety --------------------------------------------------------------------------------
+
+
+def screen_candidates(ctx: AppContext, ids: list[str]) -> tuple[dict[str, str], list[str]]:
+    """Scan candidates for instruction-like text (possible prompt injection).
+
+    Returns ({item_id: snippet} held back from the digest, notes for the reader). A new hit is
+    recorded in `flagged_items`; once you release an item (`radar flagged --release`), it's
+    never held again. Papers *about* prompt attacks are flagged but kept, with a note."""
+    held: dict[str, str] = {}
+    notes: list[str] = []
+    already_held = safety_store.held_ids(ctx.conn)
+    seen = {f["item_id"] for f in safety_store.flagged(ctx.conn, include_released=True)}
+    for item_id in ids:
+        if item_id in already_held:
+            row = next(f for f in safety_store.flagged(ctx.conn) if f["item_id"] == item_id)
+            held[item_id] = row["snippet"]
+            continue
+        if item_id in seen:
+            continue  # released by a person, or about attacks: let it through
+        row = ctx.conn.execute(
+            "SELECT title, abstract, tldr FROM items WHERE id = ?", (item_id,)
+        ).fetchone()
+        hit = safety.scan(row["title"], row["abstract"], row["tldr"])
+        if hit is None:
+            continue
+        with ctx.conn:
+            safety_store.flag_item(ctx.conn, item_id, hit.snippet, hit.about_attacks)
+        if hit.hold:
+            held[item_id] = hit.snippet
+        else:
+            notes.append(
+                f"{item_id} quotes instruction-like text, but reads as research about prompt"
+                f' attacks, so it stays a candidate: "{hit.snippet}"'
+            )
+    for item_id, snippet in held.items():
+        notes.append(
+            f'Held back {item_id} for instruction-like text: "{snippet}". If it\'s fine:'
+            f" `radar flagged --release {item_id}`."
+        )
+    return held, notes
+
+
+def quiet_sources(ctx: AppContext) -> list[str]:
+    return safety.quiet_sources(safety_store.source_runs(ctx.conn))
 
 
 # ---- reading features from the store -------------------------------------------------------
@@ -304,9 +380,9 @@ def _scored_from(d: dict) -> scoring.Scored:
 def _item_fields(p: dict) -> dict:
     return {
         "item_id": p["item_id"],
-        "title": p["title"],
-        "abstract": (p.get("abstract") or "")[:2000],
-        "tldr": p.get("tldr") or "(none)",
+        "title": fence(p["title"]),
+        "abstract": fence((p.get("abstract") or "")[:2000]),
+        "tldr": fence(p.get("tldr")) or "(none)",
     }
 
 

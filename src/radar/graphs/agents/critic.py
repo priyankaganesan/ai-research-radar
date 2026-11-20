@@ -14,6 +14,7 @@ from langgraph.graph import END, START, StateGraph
 
 from radar.graphs import prompts
 from radar.graphs.agents import parse_json
+from radar.safety import fence
 
 
 class CriticState(TypedDict, total=False):
@@ -33,9 +34,9 @@ def build_critic(llm: BaseChatModel):
                 kind=item.get("kind", "paper"),
                 slot=item.get("slot", "main"),
                 reason=item.get("reason", ""),
-                title=item["title"],
-                abstract=(item.get("abstract") or "")[:2000],
-                tldr=item.get("tldr") or "(none)",
+                title=fence(item["title"]),
+                abstract=fence((item.get("abstract") or "")[:2000]),
+                tldr=fence(item.get("tldr")) or "(none)",
             )
         )
         verdict = parse_json(str(out.content), {})

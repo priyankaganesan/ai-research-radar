@@ -24,6 +24,7 @@ from radar.sources import arxiv, hackernews, hf_papers, lab_blogs, semantic_scho
 from radar.sources.http import SourceUnavailable
 from radar.store import items as item_store
 from radar.store import memory
+from radar.store import safety as safety_store
 from radar.store import signals as signal_store
 from radar.tracing import passages_as_documents, traced
 
@@ -325,24 +326,46 @@ def collect_all(ctx: AppContext) -> list[str]:
     """Run every source, then Semantic Scholar enrichment. One failing source doesn't stop the
     rest; it's noted in the returned log instead."""
     log = []
+    today = date.today().isoformat()
+
+    def record(source: str, fetched: int = 0, added: int = 0, error: str = "") -> None:
+        # Safety: one row per source per day, so a source that silently breaks shows up.
+        with ctx.conn:
+            safety_store.record_source_run(ctx.conn, today, source, fetched, added, error)
+
     try:
         fetched, added, used = ingest(ctx, days=DEFAULT_DAYS["arxiv"])
         log.append(f"arxiv ({used}): fetched {fetched}, added {added}")
+        record("arxiv", fetched, added)
     except SourceUnavailable as e:
         log.append(f"arxiv: unavailable ({e})")
+        record("arxiv", error=str(e))
     for name, fn in (("hf", ingest_hf), ("labs", ingest_labs), ("hn", ingest_hn)):
         try:
             r = fn(ctx, days=DEFAULT_DAYS[name])
             log.append(f"{name}: fetched {r.fetched}, added {r.added}")
+            record(name, r.fetched, r.added, "; ".join(r.errors.values()) if not r.fetched else "")
         except SourceUnavailable as e:
             log.append(f"{name}: unavailable ({e})")
+            record(name, error=str(e))
     try:
         r = enrich(ctx)
         log.append(f"s2 enrich: {r.signals} papers updated")
+        record("s2", r.signals, 0)
     except SourceUnavailable as e:
         log.append(f"s2 enrich: unavailable ({e})")
+        record("s2", error=str(e))
     log += collect_gaps(ctx)
+    for source in quiet_sources(ctx):
+        log.append(f"WARNING: {source} returned nothing on its last two runs. Is it broken?")
     return log
+
+
+def quiet_sources(ctx: AppContext) -> list[str]:
+    """Sources that fetched nothing (or failed) on each of their last two collection days."""
+    from radar import safety
+
+    return safety.quiet_sources(safety_store.source_runs(ctx.conn))
 
 
 @traced("services.collect_gaps", "chain")
@@ -382,6 +405,7 @@ class DailyResult:
     team_log: list[dict] = field(default_factory=list)
     profile_log: list[str] = field(default_factory=list)
     watch_log: list[str] = field(default_factory=list)
+    review: list[str] = field(default_factory=list)  # why the digest needs review (safety)
 
 
 @traced("services.daily", "chain")
@@ -416,6 +440,7 @@ def daily(
         team_log=state.get("team_log", []),
         profile_log=state.get("profile_log", []),
         watch_log=state.get("watch_log", []),
+        review=state.get("review", []),
     )
 
 
@@ -463,8 +488,11 @@ def scheduled_daily(
     Differences from a manual `radar daily`:
     - Skip if today already has a digest (e.g. you ran it by hand, or launchd ran it on wake).
     - Wait up to `wait_s` for Ollama: right after the Mac wakes, Wi-Fi and Ollama may not be up.
-    - Never raise: return {"status": "done" | "skipped" | "failed", "message": ...}, so the job
-      can log one clear line and post a notification either way.
+    - Never raise: return {"status": "done" | "empty" | "skipped" | "failed", "message": ...},
+      so the job can log one clear line and post a notification either way.
+    - "empty" means the run finished but picked nothing (e.g. every fetch failed, or every
+      candidate was filtered out). It gets its own status so the notification doesn't announce
+      an empty digest as if it were a normal one.
     """
     import time
 
@@ -485,9 +513,21 @@ def scheduled_daily(
         result = (run_daily or daily)(ctx, mode=mode)
     except Exception as e:  # logged and notified rather than a silent non-zero exit
         return {"status": "failed", "message": f"{type(e).__name__}: {e}"}
+    review = getattr(result, "review", None) or []
+    if not result.picks:
+        candidates = getattr(result, "candidates", 0)
+        why = "nothing new was fetched" if not candidates else "every candidate was filtered out"
+        return {
+            "status": "empty",
+            "message": f"No picks for {result.date}: {candidates} candidates, {why}",
+            "path": result.path,
+            "result": result,
+        }
     return {
         "status": "done",
-        "message": f"{len(result.picks)} picks for {result.date}",
+        "message": f"{len(result.picks)} picks for {result.date}"
+        + (f"; NEEDS REVIEW: {review[0]}" if review else ""),
+        "review": review,
         "path": result.path,
         "result": result,
     }
@@ -527,8 +567,65 @@ def profile(ctx: AppContext) -> dict:
         "slot_stats": p.slot_stats,
         "ratings_applied": p.rated_seq,
         "pending_ratings": len(memory.ratings_since(ctx.conn, p.rated_seq)),
+        "awaiting_approval": safety_store.pending(ctx.conn),
         "changes": memory.recent_changes(ctx.conn),
     }
+
+
+@traced("services.decide_profile_change", "chain")
+def decide_profile_change(ctx: AppContext, pending_id: int, approve: bool) -> dict:
+    """Approve or reject a topic removal the Profile agent proposed. Only the CLI calls this:
+    approving is a person's decision, so it is deliberately not an MCP tool another agent
+    could call."""
+    from radar.personalize import load_profile, save_profile
+
+    with ctx.conn:
+        row = safety_store.decide_pending(ctx.conn, pending_id, approve)
+        if row is None:
+            raise ValueError(f"No pending change {pending_id}. `radar profile` lists them.")
+        if approve:
+            prof = load_profile(ctx)
+            if row["topic"] in prof.topics:
+                prof.topics = [t for t in prof.topics if t != row["topic"]]
+                save_profile(ctx, prof)
+            memory.log_change(
+                ctx.conn,
+                "topics",
+                {"added": [], "removed": [row["topic"]], "why": row["why"], "approved_by": "you"},
+            )
+    return {**row, "status": "approved" if approve else "rejected"}
+
+
+# ---- safety: flagged items, source health, the Critic vs. your ratings ----------------------
+
+
+@traced("services.flagged", "tool")
+def flagged(ctx: AppContext, include_released: bool = False) -> list[dict]:
+    return safety_store.flagged(ctx.conn, include_released)
+
+
+@traced("services.release_flagged", "chain")
+def release_flagged(ctx: AppContext, item_id: str) -> bool:
+    """You read a held item and it's fine: let it into future digests."""
+    with ctx.conn:
+        return safety_store.release(ctx.conn, item_id)
+
+
+@traced("services.source_health", "tool")
+def source_health(ctx: AppContext, days: int = 14) -> dict:
+    return {"runs": safety_store.source_runs(ctx.conn, days), "quiet": quiet_sources(ctx)}
+
+
+@traced("services.critic_agreement", "tool")
+def critic_agreement(ctx: AppContext) -> dict:
+    """How often the Critic's keep/drop matches your rating of the same item.
+
+    keep + useful and drop + not relevant agree; the other two disagree. Dropped items are
+    listed in the digest's notes, so you can rate them too (`radar rate ID ...`)."""
+    from radar import safety
+
+    rows = safety_store.critic_vs_ratings(ctx.conn)
+    return {"rows": rows, **safety.agreement(rows)}
 
 
 @traced("services.update_profile", "chain")

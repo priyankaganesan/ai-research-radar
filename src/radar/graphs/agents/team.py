@@ -175,6 +175,11 @@ def build_team(llm: BaseChatModel, critic_llm=None, writer_llm=None, verifier_ll
                 "summary": summary,
                 "support_rate": support_rate(state["results"]),
                 "rewrites": retries,
+                # for the digest's review flag (safety.review_reasons)
+                "claims_judged": sum(r["supported"] is not None for r in state["results"]),
+                "claims_supported": sum(r["supported"] is True for r in state["results"]),
+                "claims_cut": len(bad),
+                "unverified": sum(r["supported"] is None for r in state["results"]),
             }
             update = {
                 "done": [*(state.get("done") or []), finished],
@@ -240,7 +245,7 @@ def make_team_summarizer(
                 "reserve": load_reserve(state),
                 "stats": new_stats(),
                 "done": [],
-                "notes": [],
+                "notes": list(state.get("notes") or []),  # keep notes from earlier steps
                 "log": [],
             },
             # each pick takes up to ~12 steps (critic, writer/verifier retries, supervisor hops)

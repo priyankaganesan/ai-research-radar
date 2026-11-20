@@ -89,3 +89,33 @@ def test_customer_stories_are_not_lab_launches():
     ]
     picks = scoring.pick(scoring.score_all(pool), n_main=0, reserved=2)
     assert [p.scored.features.item_id for p in picks if p.slot == "lab_launch"] == ["post:launch"]
+
+
+def test_hn_self_posts_never_take_main_slots():
+    pool = scoring.score_all(
+        [
+            feat("hn:1", source="hn", kind="post", title="Show HN: my agent app", hn_points=500),
+            feat("hn:2", source="hn", kind="post", title="Launch HN: Foo (YC F26)", hn_points=400),
+            feat("hn:3", source="hn", kind="post", title="A real story about agents", hn_points=50),
+            feat("p1"),
+        ]
+    )
+    ids = [p.scored.features.item_id for p in scoring.pick(pool, n_main=3, plan=[])]
+    assert "hn:1" not in ids and "hn:2" not in ids
+    assert set(ids) == {"hn:3", "p1"}  # the digest is shorter rather than filled with launches
+
+
+def test_relevance_floor_puts_on_topic_items_first_and_fills_thin_days():
+    pool = scoring.score_all(
+        [
+            feat("popular-off-topic", relevance=0.45, hf_upvotes=300),
+            feat("on-topic-a", relevance=0.6),
+            feat("on-topic-b", relevance=0.55),
+        ]
+    )
+    picks = scoring.pick(pool, n_main=2, plan=[], min_relevance=0.5)
+    assert [p.scored.features.item_id for p in picks] == ["on-topic-a", "on-topic-b"]
+    # a thin day: not enough items clear the floor, so the best one below it fills the slot
+    picks = scoring.pick(pool, n_main=3, plan=[], min_relevance=0.5)
+    below = [p for p in picks if p.scored.features.item_id == "popular-off-topic"]
+    assert below and "below the relevance floor" in below[0].reason

@@ -111,9 +111,9 @@ def test_health(ctx):
 def test_scheduled_run_waits_for_ollama_then_runs(ctx):
     checks = iter([{"ok": False, "models": {}, "error": "x"}, {"ok": True}])
     slept = []
-    fake = SimpleNamespace(picks=[1, 2, 3], date="2026-11-14", path="p")
+    fake = SimpleNamespace(picks=[1, 2, 3], date="2026-11-14", path="p", candidates=9)
     out = services.scheduled_daily(
-        ctx, check=lambda: next(checks), sleep=slept.append, run_daily=lambda c, mode: fake
+        ctx, check=lambda: next(checks), sleep=slept.append, run_daily=lambda c, mode, f=fake: f
     )
     assert out["status"] == "done" and out["message"] == "3 picks for 2026-11-14"
     assert slept == [30]
@@ -140,3 +140,14 @@ def test_scheduled_run_skips_a_day_already_done(filled_ctx):
         )
     out = services.scheduled_daily(filled_ctx, check=lambda: {"ok": True})
     assert out["status"] == "skipped"
+
+
+def test_scheduled_run_reports_an_empty_digest(ctx):
+    """A run that picks nothing is "empty", not "done", so the banner doesn't say it's ready."""
+    for candidates, why in [(0, "nothing new was fetched"), (40, "every candidate was filtered")]:
+        fake = SimpleNamespace(picks=[], date="2026-11-20", path="p", candidates=candidates)
+        out = services.scheduled_daily(
+            ctx, check=lambda: {"ok": True}, run_daily=lambda c, mode, f=fake: f
+        )
+        assert out["status"] == "empty"
+        assert f"{candidates} candidates" in out["message"] and why in out["message"]

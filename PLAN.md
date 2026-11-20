@@ -18,6 +18,7 @@ The plan for the whole codebase. `CLAUDE.md` holds the rules and design; this fi
 | M5 | Going deeper | Full-text fetch and section chunking when a paper gets repeated questions | M1 |
 | M7 | FastAPI web UI | `radar serve` opens a local web app: ask with streamed answers and citations, browse and rate the digest, search the store, watchlist | M2, M4 (build before recording the presentation) |
 | M6 | Evals and polish | LangSmith eval suite, model comparisons, scheduled runs, graph diagrams, demo script. Stretch 1: a pgvector backend. Stretch 2: full cloud pipeline (see Stretch goals). Built 2026-11-14: the launchd morning job and the eval suite only; graph diagrams, demo script and both stretch goals left out for now | all |
+| M6.1 | Safety guardrails | Source text fenced in `<source>` tags with a data-not-instructions rule; instruction-like items flagged and held back (`radar flagged`); a digest-level "needs review" flag (low Verifier support, many cuts, Critic at its cap, held items, quiet sources); per-source run log and quiet-source warning (`radar sources`); Profile agent topic removals wait for approval (`radar profile --approve`); Critic agreement with ratings (`radar critic`). Built 2026-11-16 | M2.5, M4, M6 |
 
 M3 and M5 are independent of each other; do whichever the next assignment needs first. M1.5 is for learning: it exists to compare two vector stores, not because the agent needs two. M7 comes after M4 because the UI is most useful once there's a digest to rate, and before M6 so the presentation can demo it.
 
@@ -277,6 +278,7 @@ score = w_rel * relevance        # cosine(paper embedding, profile vector)
 - **Lab-launch slot:** the best-scoring RSS item from a lab feed.
 - Ratings adjust the weights in small steps, within bounds. Usefulness rates on the reserved slots move the reserved count between 1 and 3.
 - Keep every weight in `profile`, so the digest's "why" line can show the components.
+- **Main-slot filters (2026-11-16, after the Nov 15 digest):** Show/Launch/Ask/Tell HN posts never take main slots, and main picks need relevance ≥ `DIGEST_MIN_RELEVANCE` (0.5) while enough items clear it; below-floor items fill only a thin day and say so. Both keep junk from using up the Critic's 3 drops.
 
 ## CLI
 
@@ -300,6 +302,10 @@ radar serve [--port 8000]                                  # M7
 radar fulltext [ITEM_ID] [-q QUERY] [--force]               # M5: fetch/list full texts
 radar health                                               # M6: db, Ollama, models reachable
 radar schedule install|status|run|remove [--at HH:MM]     # M6: launchd morning job
+radar flagged [--release ID] [--all]   # M6.1: items held for instruction-like text
+radar sources [--days N]               # M6.1: per-source runs, quiet sources
+radar critic                           # M6.1: Critic keep/drop vs. your ratings
+radar profile --approve N | --reject N # M6.1: pending topic removals
 radar eval [-t retrieval|agent|no_retrieval|all] [-m MODEL ...] [--backend B] [--judge] [--local]  # M1 basic, M6 full
 ```
 

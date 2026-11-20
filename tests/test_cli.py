@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from typer.testing import CliRunner
 
 from radar.cli import app
@@ -88,3 +90,19 @@ def test_reindex_and_compare_on_lance(monkeypatch):
     result = runner.invoke(app, ["reindex", "--backend", "lance", "--ann"])
     assert result.exit_code == 1
     assert "at least 256" in result.output
+
+
+def test_digest_prints_the_latest(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from radar import cli
+
+    (tmp_path / "2026-11-19.md").write_text("old\n")
+    (tmp_path / "2026-11-20.md").write_text("# AI Research Radar: 2026-11-20\n")
+    settings = SimpleNamespace(digest_dir=tmp_path)
+    monkeypatch.setattr(cli, "_ctx", lambda: SimpleNamespace(settings=settings))
+    out = CliRunner().invoke(cli.app, ["digest"])
+    assert out.exit_code == 0 and "2026-11-20" in out.output
+    out = CliRunner().invoke(cli.app, ["digest", "--date", "2026-11-19"])
+    assert out.output.strip() == "old"
+    assert CliRunner().invoke(cli.app, ["digest", "--date", "2020-01-01"]).exit_code == 1

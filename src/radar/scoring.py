@@ -24,6 +24,14 @@ NOT_A_LAUNCH = re.compile(
     r"\b(builds?|built|uses?|powers?|scales?|transforms?)\b.+\bwith\b|customer stor|case stud",
     re.IGNORECASE,
 )
+# Hacker News self-posts: product launches, demos and questions. They often score high on
+# relevance (they mention agents) but aren't research, so they don't get main slots. They stay
+# in the store, searchable, and their points still count for any paper they link to.
+HN_META = re.compile(r"^(Show|Launch|Ask|Tell) HN\b", re.IGNORECASE)
+# Main picks need at least this relevance to the profile, while enough items clear it. A
+# formula can't judge topic the way the Critic does, but a floor keeps popular, off-topic
+# papers from reaching it and using up its drops.
+DEFAULT_MIN_RELEVANCE = 0.5
 
 
 @dataclass
@@ -107,7 +115,11 @@ class Pick:
 
 
 def pick(
-    scored: list[Scored], n_main: int = 6, reserved: int = 2, plan: list[str] | None = None
+    scored: list[Scored],
+    n_main: int = 6,
+    reserved: int = 2,
+    plan: list[str] | None = None,
+    min_relevance: float = 0.0,
 ) -> list[Pick]:
     """Choose the digest: the reserved slots first, then the best of the rest.
 
@@ -122,7 +134,7 @@ def pick(
     taken: set[str] = set()
 
     def take(s: Scored, slot: str) -> None:
-        chosen.append(Pick(s, slot, explain(s, slot)))
+        chosen.append(Pick(s, slot, explain(s, slot, min_relevance)))
         taken.add(s.features.item_id)
 
     plan = plan if plan is not None else ["early_buzz", "lab_launch"][:reserved]
@@ -132,7 +144,7 @@ def pick(
             take(spare[0], slot)
 
     total = n_main + len(plan)
-    for s in scored:
+    for s in slot_candidates(scored, "main", min_relevance):
         if len(chosen) >= total:
             break
         if s.features.item_id not in taken:
@@ -142,9 +154,13 @@ def pick(
     return sorted(chosen, key=lambda p: (order[p.slot], -p.scored.total))
 
 
-def slot_candidates(scored: list[Scored], slot: str) -> list[Scored]:
+def slot_candidates(scored: list[Scored], slot: str, min_relevance: float = 0.0) -> list[Scored]:
     """Everything eligible for a slot, best first. Used to fill the slot and, in M2.5, to
-    replace a pick the Critic drops with another item that fits the same slot."""
+    replace a pick the Critic drops with another item that fits the same slot.
+
+    main: no Show/Launch/Ask/Tell HN posts; items at or above `min_relevance` come first, by
+    score, and the rest after them, so a thin day still fills the digest (the "why" line says
+    when a pick is below the floor)."""
     if slot == "early_buzz":
         buzz = [
             s
@@ -160,10 +176,16 @@ def slot_candidates(scored: list[Scored], slot: str) -> list[Scored]:
             for s in scored
             if s.features.source.startswith("lab:") and not NOT_A_LAUNCH.search(s.features.title)
         ]
-    return list(scored)  # main: anything, by score
+    main = [s for s in scored if not is_hn_meta(s.features)]
+    above = [s for s in main if s.features.relevance >= min_relevance]
+    return above + [s for s in main if s.features.relevance < min_relevance]
 
 
-def explain(s: Scored, slot: str) -> str:
+def is_hn_meta(f: Features) -> bool:
+    return f.source == "hn" and bool(HN_META.search(f.title))
+
+
+def explain(s: Scored, slot: str, min_relevance: float = 0.0) -> str:
     """The one-line "why" shown in the digest, built from the score's parts."""
     f = s.features
     bits = [f"relevance {max(f.relevance, 0):.2f}"]
@@ -180,4 +202,7 @@ def explain(s: Scored, slot: str) -> str:
         "lab_launch": "Lab launch",
     }[slot]
     top = max(s.parts, key=s.parts.get)
-    return f"{lead} ({s.total:.2f}, mostly {top}): " + ", ".join(bits)
+    line = f"{lead} ({s.total:.2f}, mostly {top}): " + ", ".join(bits)
+    if slot == "main" and f.relevance < min_relevance:
+        line += f" (below the relevance floor {min_relevance:.2f}: a thin day)"
+    return line

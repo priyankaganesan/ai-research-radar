@@ -57,6 +57,9 @@ uv run radar profile                  # interest topics, scoring weights, reserv
 uv run radar profile --update         # apply pending ratings now (radar daily does it too)
 uv run radar watchlist                # early-buzz papers waiting to earn citations
 uv run radar gaps                     # questions the agent couldn't answer yet
+uv run radar flagged                  # items held back for instruction-like text (--release ID)
+uv run radar sources                  # what each source returned lately; warns on quiet sources
+uv run radar critic                   # how often the Critic agrees with your ratings
 uv run radar calls                    # local log of every traced call (--tree last, --errors, --stats)
 uv run pytest             # tests (never call Ollama or the network)
 uv run ruff check .       # lint

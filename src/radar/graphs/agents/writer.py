@@ -13,6 +13,7 @@ from langgraph.graph import END, START, StateGraph
 
 from radar.graphs import prompts
 from radar.graphs.qa import keep_valid_citations
+from radar.safety import fence
 
 
 class WriterState(TypedDict, total=False):
@@ -32,9 +33,9 @@ def build_writer(llm: BaseChatModel):
         out = llm.invoke(
             prompts.WRITER.format(
                 item_id=item["item_id"],
-                title=item["title"],
-                abstract=(item.get("abstract") or "")[:2000],
-                tldr=item.get("tldr") or "(none)",
+                title=fence(item["title"]),
+                abstract=fence((item.get("abstract") or "")[:2000]),
+                tldr=fence(item.get("tldr")) or "(none)",
                 feedback=feedback,
             )
         )

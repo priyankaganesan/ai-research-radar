@@ -24,6 +24,7 @@ from radar import feedback
 from radar.context import AppContext
 from radar.store import digests as digest_store
 from radar.store import memory
+from radar.store import safety as safety_store
 from radar.store import signals as signal_store
 
 PROFILE_AGENT_MIN_RATINGS = 3  # useful/not-relevant ratings needed before the agent runs
@@ -135,6 +136,7 @@ class ProfileUpdate:
     added: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
     rejected: list[str] = field(default_factory=list)
+    pending: list[str] = field(default_factory=list)  # removals waiting for your approval
     why: str = ""
 
     def lines(self) -> list[str]:
@@ -158,6 +160,8 @@ class ProfileUpdate:
             if self.removed:
                 what.append(f"removed {self.removed}")
             out.append(f"  profile agent: {', '.join(what) or 'no change'}. {self.why}".rstrip())
+            for t in self.pending:
+                out.append(f"    waiting for you: remove {t!r} (`radar profile` to approve)")
             for r in self.rejected:
                 out.append(f"    refused: {r}")
         return out
@@ -210,6 +214,11 @@ def update_profile(ctx: AppContext, llm: BaseChatModel | None = None) -> Profile
         report.agent_ran = True
         report.added, report.removed = out["added"], out["removed"]
         report.rejected, report.why = out["rejected"], out["why"]
+        if ctx.settings.profile_confirm_removals and report.removed:
+            # Safety: a removal hides papers, and you'd never see what you no longer see. So it
+            # waits for a person (`radar profile --approve ID`) instead of applying now.
+            topics = list(prof.topics) + report.added
+            report.pending, report.removed = report.removed, []
 
     prof.weights, prof.reserved_slots, prof.slot_order = weights, reserved, order
     prof.slot_tally, prof.slot_stats, prof.topics = tally, stats, topics
@@ -227,6 +236,8 @@ def update_profile(ctx: AppContext, llm: BaseChatModel | None = None) -> Profile
             )
         if change:
             memory.log_change(ctx.conn, "reserved", {**change, "order": order})
+        for t in report.pending:
+            safety_store.add_pending(ctx.conn, t, report.why)
         if report.added or report.removed:
             memory.log_change(
                 ctx.conn,

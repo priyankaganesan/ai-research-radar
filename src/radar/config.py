@@ -67,12 +67,21 @@ class Settings(BaseSettings):
     # Candidates need this much real text beyond the title (title-only HN stories can't be
     # summarized or judged).
     digest_min_text_chars: int = 200
+    # Main picks: at least this relevance to the profile while enough items clear it
+    # (scoring.slot_candidates). Show/Launch/Ask/Tell HN posts never take main slots.
+    digest_min_relevance: float = 0.5
     digest_main: int = 6
     digest_reserved: int = 2  # early-buzz + lab-launch slots
     digest_dir: Path = Path("data/digests")
     digest_mode: Literal["single", "multi"] = "single"  # multi = M2.5 agents
     # M2.5: run the Verifier agent on every Q&A answer (one more model call per question).
     verify_answers: bool = False
+
+    # Safety: when a digest is marked "needs review" (radar/safety.py review_reasons).
+    review_min_support: float = 0.8  # Verifier support rate in the final drafts, below this
+    review_max_cut_summaries: int = 2  # more summaries than this lost claims
+    # Topic removals proposed by the Profile agent wait for `radar profile --approve`.
+    profile_confirm_removals: bool = True
 
     # M1.6: load the Q&A tools from Radar's own MCP server instead of importing them.
     tools_via_mcp: bool = False

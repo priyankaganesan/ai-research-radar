@@ -53,6 +53,7 @@ def test_002_keeps_data_from_an_m0_store(tmp_path):
         "005_memory.sql",
         "006_tool_calls.sql",
         "007_full_text.sql",
+        "008_safety.sql",
     ]
     item = conn.execute("SELECT kind FROM items WHERE id = 'p1'").fetchone()
     assert item["kind"] == "paper"

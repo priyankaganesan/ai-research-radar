@@ -18,6 +18,7 @@ from langgraph.graph import END, START, StateGraph
 
 from radar.graphs import prompts
 from radar.graphs.agents import parse_json
+from radar.safety import fence
 
 _CITE = re.compile(r"\[([^\[\]]+)\]")
 
@@ -60,7 +61,9 @@ def build_verifier(llm: BaseChatModel):
         passages = [p for p in state["passages"] if p["item_id"] in cited] or state["passages"]
         listing = "\n".join(f"{c['n']}. {c['claim']}" for c in claims)
         sources = "\n\n".join(
-            f"[{p['item_id']}] {p['title']}\n{p['text'][:2000]}" for p in passages
+            f'<source id="{p["item_id"]}">\n[{p["item_id"]}] {fence(p["title"])}\n'
+            f"{fence(p['text'][:2000])}\n</source>"
+            for p in passages
         )
         out = llm.invoke(prompts.VERIFIER.format(passages=sources, claims=listing))
         verdicts = parse_json(str(out.content), [])

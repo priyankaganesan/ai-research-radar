@@ -312,9 +312,19 @@ def daily(
         typer.echo(f"=== {datetime.now():%Y-%m-%d %H:%M:%S} scheduled run ===")
         out = services.scheduled_daily(_ctx(), mode=mode)
         typer.echo(f"{out['status']}: {out['message']}")
+        # Clicking an osascript banner opens Script Editor (the app that "sent" it), not the
+        # digest, so the banner says how to read the digest instead.
         if out["status"] == "done":
             _print_daily(out["result"])
-            notify("AI Research Radar", f"Today's digest is ready: {out['message']}.")
+            title = "AI Research Radar: needs review" if out.get("review") else "AI Research Radar"
+            notify(title, f"Today's digest is ready: {out['message'][:140]}. Read it: radar digest")
+        elif out["status"] == "empty":
+            _print_daily(out["result"])
+            notify(
+                "AI Research Radar: EMPTY digest",
+                f"{out['message'][:120]}. See data/logs/daily.log",
+            )
+            raise typer.Exit(code=2)  # shows up as "last exit code = 2" in `radar schedule status`
         elif out["status"] == "failed":
             notify("AI Research Radar", f"The morning digest failed: {out['message'][:120]}")
             raise typer.Exit(code=1)
@@ -328,6 +338,30 @@ def daily(
         mode=mode,
     )
     _print_daily(result)
+
+
+@app.command()
+def digest(
+    on: str | None = typer.Option(None, "--date", help="YYYY-MM-DD (default: the latest one)."),
+    open_: bool = typer.Option(False, "--open", help="Open the file in its default Mac app."),
+) -> None:
+    """Print a digest (the latest by default), or open it with --open."""
+    import subprocess
+
+    folder = _ctx().settings.digest_dir
+    if on:
+        path = folder / f"{on}.md"
+    else:  # file names are YYYY-MM-DD.md, so sorting by name sorts by date
+        found = sorted(folder.glob("????-??-??.md"))
+        path = found[-1] if found else folder / "none.md"
+    if not path.exists():
+        typer.echo(f"No digest at {path}. Run `radar daily` first.")
+        raise typer.Exit(code=1)
+    if open_:
+        subprocess.run(["open", str(path)], check=False)
+        typer.echo(f"Opened {path}")
+    else:
+        typer.echo(path.read_text())
 
 
 def _print_daily(result) -> None:
@@ -347,6 +381,10 @@ def _print_daily(result) -> None:
         typer.secho(f"Agents: {result.stats}", fg=typer.colors.BRIGHT_BLACK)
     for line in result.watch_log:
         typer.secho(f"  {line}", fg=typer.colors.CYAN)
+    if result.review:
+        typer.secho("\nNEEDS REVIEW: read the sources before relying on this digest.", fg="red")
+        for r in result.review:
+            typer.secho(f"  - {r}", fg=typer.colors.RED)
     timing = ", ".join(f"{k} {v}s" for k, v in result.timings.items())
     typer.secho(f"\nTimings: {timing}", fg=typer.colors.BRIGHT_BLACK)
     typer.echo(f"Digest written to {result.path}")
@@ -445,6 +483,11 @@ def health() -> None:
         typer.echo(f"model {m}: {'ok' if ok else f'missing (ollama pull {m})'}")
     if h["error"]:
         typer.echo(h["error"])
+    quiet = services.quiet_sources(ctx)
+    if quiet:  # a warning, not a failure: the digest can still run on the other sources
+        typer.secho(
+            f"quiet sources: {', '.join(quiet)} (nothing on the last two runs)", fg="yellow"
+        )
     if not h["ok"]:
         raise typer.Exit(code=1)
 
@@ -494,11 +537,26 @@ def profile(
         False, "--no-agent", help="With --update: skip the Profile agent (no model call)."
     ),
     reset: bool = typer.Option(False, "--reset", help="Back to the default profile."),
+    approve: int | None = typer.Option(
+        None, "--approve", help="Approve a pending topic removal by its number."
+    ),
+    reject: int | None = typer.Option(
+        None, "--reject", help="Reject a pending topic removal by its number."
+    ),
 ) -> None:
     """Show the interest profile: topics, scoring weights, reserved slots, recent changes."""
     from radar import services
 
     ctx = _ctx()
+    for pid, ok in ((approve, True), (reject, False)):
+        if pid is None:
+            continue
+        try:
+            row = services.decide_profile_change(ctx, pid, approve=ok)
+        except ValueError as e:
+            typer.echo(str(e))
+            raise typer.Exit(code=1) from e
+        typer.echo(f"{row['status'].capitalize()}: remove {row['topic']!r}.")
     if reset:
         services.reset_profile(ctx)
         typer.echo("Profile reset to the defaults (your ratings are kept).")
@@ -515,6 +573,10 @@ def profile(
     for slot, st in p["slot_stats"].items():
         typer.echo(f"  {slot}: {st['useful']} useful of {st['rated']} rated")
     typer.echo(f"Ratings applied: {p['ratings_applied']}, waiting: {p['pending_ratings']}")
+    if p["awaiting_approval"]:
+        typer.secho("Waiting for your approval (--approve N or --reject N):", fg="yellow")
+        for c in p["awaiting_approval"]:
+            typer.secho(f"  {c['id']}. {c['action']} {c['topic']!r}: {c['why']}", fg="yellow")
     if p["changes"]:
         typer.echo("Recent changes:")
         for c in p["changes"]:
@@ -761,3 +823,85 @@ def run_eval(
 
 if __name__ == "__main__":
     app()
+
+
+# ---- safety --------------------------------------------------------------------------------
+
+
+@app.command()
+def flagged(
+    release: str | None = typer.Option(
+        None, "--release", help="You read this item and it's fine: let it into digests."
+    ),
+    all_: bool = typer.Option(False, "--all", help="Include items already released."),
+) -> None:
+    """Items held back from the digest because their text reads like instructions."""
+    from radar import services
+
+    ctx = _ctx()
+    if release:
+        ok = services.release_flagged(ctx, release)
+        typer.echo(f"Released {release}." if ok else f"{release} isn't held.")
+        return
+    rows = services.flagged(ctx, include_released=all_)
+    if not rows:
+        typer.echo("Nothing flagged.")
+        return
+    for r in rows:
+        state = (
+            "released"
+            if r["released_at"]
+            else "flagged (about attacks)"
+            if r["about_attacks"]
+            else "HELD"
+        )
+        typer.echo(f"[{r['item_id']}] {r['title'][:70]}  ({r['source']}, {state})")
+        typer.secho(f'    "{r["snippet"]}"', fg=typer.colors.BRIGHT_BLACK)
+        typer.secho(f"    {r['url']}", fg=typer.colors.BRIGHT_BLACK)
+
+
+@app.command()
+def sources(days: int = typer.Option(14, help="How many days of runs to show.")) -> None:
+    """What each source returned on recent collection runs, and which have gone quiet."""
+    from radar import services
+
+    h = services.source_health(_ctx(), days)
+    if not h["runs"]:
+        typer.echo("No collection runs recorded yet (they start with the next `radar daily`).")
+        return
+    for r in h["runs"]:
+        what = f"error: {r['error'][:60]}" if r["error"] else f"fetched {r['fetched']}"
+        typer.echo(f"{r['date']}  {r['source']:<6} {what}, added {r['added']}")
+    if h["quiet"]:
+        typer.secho(f"Quiet on the last two runs: {', '.join(h['quiet'])}", fg="yellow")
+
+
+@app.command()
+def critic() -> None:
+    """How often the Critic's keep/drop matches your ratings of the same items."""
+    from radar import services
+
+    out = services.critic_agreement(_ctx())
+    if not out["n"]:
+        typer.echo(
+            "No overlap yet: rate items from multi-mode digests, including the ones the Critic"
+            " dropped (listed in the digest's notes)."
+        )
+        return
+
+    def pct(x):
+        return "n/a" if x is None else f"{x:.0%}"
+
+    typer.echo(f"Agreement: {pct(out['agreement'])} of {out['n']} rated decisions")
+    typer.echo(
+        f"  kept, and you found useful:        {pct(out['keep_agreement'])} of {out['keep_n']}"
+    )
+    typer.echo(
+        f"  dropped, and you found not relevant: {pct(out['drop_agreement'])} of {out['drop_n']}"
+    )
+    for r in out["rows"]:
+        ok = (r["decision"], r["rating"]) in {("keep", "useful"), ("drop", "not_relevant")}
+        mark = "agree   " if ok else "DISAGREE"
+        typer.echo(
+            f"  {mark} {r['decision']:<4} / {r['rating']:<12} [{r['item_id']}] {r['title'][:50]}"
+        )

@@ -184,6 +184,13 @@ def build_qa_graph(
             return abstain({**state, "missing": "the answer could not be tied to any passage"})
         full = with_sources(text, cited, state["passages"])
         trace = state["trace"] + [{"step": "answer", "cited": cited}]
+        suspect = flagged_sources(cited, state["passages"])
+        if suspect:  # safety: say so, rather than silently trust a source that gave orders
+            full += (
+                f"\n\n(Source(s) {', '.join(suspect)} contain instruction-like text. They were"
+                " treated as data, but check them before relying on this answer.)"
+            )
+            trace.append({"step": "safety", "instruction_like": suspect})
         return {
             "messages": [AIMessage(full)],
             "answer": full,
@@ -271,6 +278,19 @@ def build_qa_graph(
 
 def _key(p: dict) -> tuple[str, str | None]:
     return (p["item_id"], p.get("section"))
+
+
+def flagged_sources(cited: list[str], passages: list[dict]) -> list[str]:
+    """Cited items whose passages read like instructions to the model (radar/safety.py)."""
+    from radar import safety
+
+    out = []
+    for p in passages:
+        if p["item_id"] in cited and p["item_id"] not in out:
+            hit = safety.scan(p.get("title"), p.get("text"))
+            if hit and hit.hold:
+                out.append(p["item_id"])
+    return out
 
 
 def with_sources(text: str, cited: list[str], passages: list[dict]) -> str:

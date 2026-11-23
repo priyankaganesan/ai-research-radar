@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {# htmx 2 doesn't swap 4xx/5xx responses unless told to: swap them too, so a failed action
+     shows its error message where the result would have gone. #}
+  <meta name="htmx-config" content='{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true}]}'>
+  <title>{% block title %}Radar{% endblock %} · AI Research Radar</title>
+  <link rel="stylesheet" href="/static/pico.min.css">
+  <link rel="stylesheet" href="/static/radar.css">
+  <script src="/static/htmx.min.js"></script>
+  <script src="/static/htmx-ext-sse.js"></script>
+</head>
+<body hx-boost="true">
+  <header class="container">
+    <nav>
+      <ul><li><a href="/" class="brand"><strong>Radar</strong></a></li></ul>
+      <ul class="nav-links">
+        <li><a href="/">Today</a></li>
+        <li><a href="/ask">Ask</a></li>
+        <li><a href="/search">Search</a></li>
+        <li><a href="/profile">Profile{% set count = nav.pending if nav else 0 %}{% include "partials/_badge_pending.html" %}</a></li>
+        <li><a href="/watchlist">Watchlist</a></li>
+        <li><a href="/gaps">Gaps</a></li>
+        <li><a href="/library">Library</a></li>
+        <li>
+          <details class="dropdown">
+            <summary>System{% if nav and nav.flagged %} <span class="badge warn">{{ nav.flagged }}</span>{% endif %}</summary>
+            <ul dir="rtl">
+              <li><a href="/system/health">Health</a></li>
+              <li><a href="/system/sources">Sources</a></li>
+              <li><a href="/system/flagged">Flagged{% if nav and nav.flagged %} ({{ nav.flagged }}){% endif %}</a></li>
+              <li><a href="/system/calls">Calls</a></li>
+              <li><a href="/system/critic">Critic</a></li>
+            </ul>
+          </details>
+        </li>
+      </ul>
+    </nav>
+    {% if nav and nav.daily_running %}
+      <p class="banner info">The digest run (started {{ nav.daily_running.started[11:16] }}) is using Qwen right now. Answers will be slower until it finishes.</p>
+    {% endif %}
+    {% if nav and nav.busy_job %}
+      <p class="banner muted">Working on: <a href="/jobs/{{ nav.busy_job.id }}">{{ nav.busy_job.title }}</a> ({{ nav.busy_job.elapsed() | duration }} so far)</p>
+    {% endif %}
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="container muted small">
+    Local inference, cloud tracing. Everything here runs on this Mac; only traces go to LangSmith (when it's on).
+  </footer>
+</body>
+</html>

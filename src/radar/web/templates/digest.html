@@ -1,0 +1,63 @@
+{% extends layout %}
+{% block title %}{{ d.date if d else "Today" }}{% endblock %}
+{% block content %}
+{% if not d %}
+  <h2>No digest yet</h2>
+  <p>The morning run hasn't written a digest{% if missing %} for {{ missing }}{% endif %}. You can start one now; it takes a few minutes with Qwen.</p>
+  {% include "partials/_run_daily.html" %}
+{% else %}
+  <hgroup>
+    <h2>Digest for {{ d.date }}</h2>
+    <p class="tabs">
+      {% if d.older %}<a href="/digest/{{ d.older }}">← {{ d.older }}</a>{% endif %}
+      {% if d.newer %}<a href="/digest/{{ d.newer }}">{{ d.newer }} →</a>{% endif %}
+      <span class="muted">{{ d.picks | length }} picks · rate each one; ratings tune what the next digests pick</span>
+    </p>
+  </hgroup>
+
+  {% if d.review %}
+    <article class="review">
+      <strong>Read this one carefully.</strong> The safety checks flagged this digest:
+      <ul>{% for r in d.review %}<li>{{ r }}</li>{% endfor %}</ul>
+    </article>
+  {% endif %}
+
+  {% for slot, label in SLOTS.items() %}
+    {% set picks = d.picks | selectattr("slot", "equalto", slot) | list %}
+    {% if picks %}
+      <h3>{{ label }}</h3>
+      {% for p in picks %}
+        <article class="card">
+          <header>
+            <h3><a href="{{ p.item_id | item_url }}">{{ p.title }}</a></h3>
+            <small class="muted">{{ p.item_id }} · <a href="{{ p.url }}" target="_blank" rel="noopener noreferrer">source ↗</a></small>
+          </header>
+          {% if p.summary %}<div class="summary">{{ p.summary | md }}</div>{% else %}<p class="muted">No summary.</p>{% endif %}
+          <p class="why">Why: {{ p.reason }}</p>
+          {% if p.concerns %}<p class="concerns">Critic: {{ p.concerns }}</p>{% endif %}
+          <footer>{% with item_id = p.item_id, rating = p.rating %}{% include "partials/_rating.html" %}{% endwith %}</footer>
+        </article>
+      {% endfor %}
+    {% endif %}
+  {% endfor %}
+
+  {% if d.dropped %}
+    <details>
+      <summary>The Critic dropped {{ d.dropped | length }} item(s). Rate them too: it shows whether the Critic agrees with you.</summary>
+      {% for c in d.dropped %}
+        <article class="card">
+          <header><h3><a href="{{ c.item_id | item_url }}">{{ c.title }}</a></h3><small class="muted">{{ c.item_id }}</small></header>
+          <p class="concerns">Why dropped: {{ c.concerns or "no reason given" }}</p>
+          <footer>{% with item_id = c.item_id, rating = c.rating %}{% include "partials/_rating.html" %}{% endwith %}</footer>
+        </article>
+      {% endfor %}
+    </details>
+  {% endif %}
+
+  <details>
+    <summary>Run the digest again</summary>
+    <p class="small muted">Starts the same run the 7 AM job does (collect, score, pick, summarize). It replaces the picks for today.</p>
+    {% include "partials/_run_daily.html" %}
+  </details>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,38 @@
+{# A background job: live progress while it runs, its result when it's done.
+   While running, the <article> holds one SSE connection; each event type goes to the element
+   whose sse-swap names it: "step" adds a line, "status" refreshes the clock, and "done"
+   replaces this whole block with the finished version (the else-branch below). #}
+<div id="job-{{ job.id }}" class="job">
+{% if not job.done %}
+  <article hx-ext="sse" sse-connect="/jobs/{{ job.id }}/events?after={{ job.events | length }}" sse-close="close">
+    <header>
+      <strong>{{ job.title }}</strong>
+      <span sse-swap="status">{% include "partials/_job_status.html" %}</span>
+    </header>
+    <ul class="steps" sse-swap="step" hx-swap="beforeend">
+      {% for e in job.events %}{% include "partials/_step.html" %}{% endfor %}
+    </ul>
+    <div sse-swap="done" hx-target="#job-{{ job.id }}" hx-swap="outerHTML"></div>
+    <footer>
+      <button class="secondary outline small" hx-post="/jobs/{{ job.id }}/cancel" hx-target="next .cancel-msg">Stop</button>
+      <span class="cancel-msg small"></span>
+      <small class="muted">You can leave this page; the work continues. <a href="/jobs/{{ job.id }}">Link to this job</a></small>
+    </footer>
+  </article>
+{% else %}
+  {% if job.status == "done" %}
+    {% include "partials/_result_" ~ job.kind ~ ".html" %}
+  {% elif job.status == "cancelled" %}
+    <article><p class="muted">{{ job.title }}: stopped{% if job.started %} after {{ job.elapsed() | duration }}{% endif %}.</p></article>
+  {% else %}
+    <article class="error-box"><p><strong>{{ job.title }} failed.</strong> {{ job.error }}</p>
+      <p class="small muted">The full error is in the terminal running <code>radar serve</code>, and in <a href="/system/calls?errors=1">Calls</a>.</p></article>
+  {% endif %}
+  {% if job.events %}
+    <details class="small">
+      <summary>How it got there: {{ job.events | length }} steps in {{ job.elapsed() | duration }}</summary>
+      <ul class="steps">{% for e in job.events %}{% include "partials/_step.html" %}{% endfor %}</ul>
+    </details>
+  {% endif %}
+{% endif %}
+</div>

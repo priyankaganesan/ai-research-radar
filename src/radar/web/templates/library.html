@@ -1,0 +1,24 @@
+{% extends layout %}
+{% block title %}Library{% endblock %}
+{% block content %}
+<h2>Full-text library</h2>
+<p class="muted small">Papers whose whole text is split into sections and searchable. The agent fetches one by itself once a paper has been cited by two questions; you can fetch any item here or on its page.</p>
+<form hx-post="/library/fetch" hx-target="#fetches" hx-swap="afterbegin">
+  <fieldset role="group">
+    <input name="item_id" placeholder="Item ID, e.g. 2611.09807" required>
+    <button type="submit">Fetch full text</button>
+  </fieldset>
+</form>
+<div id="fetches">{% for job in jobs if not job.done %}{% include "partials/_job.html" %}{% endfor %}</div>
+{% if not rows %}<p class="muted">No full texts yet.</p>{% else %}
+<table>
+  <thead><tr><th>Item</th><th>Status</th><th>From</th><th>Sections</th><th>Chunks</th><th>Why</th><th>When</th></tr></thead>
+  {% for r in rows %}
+    <tr><td><a href="{{ r.item_id | item_url }}">{{ r.title }}</a></td>
+      <td class="{{ 'ok' if r.status == 'ok' else 'warn-text' }}">{{ r.status }}{% if r.error %}<br><span class="small">{{ r.error[:120] }}</span>{% endif %}</td>
+      <td>{{ r.source or "" }}</td><td>{{ r.n_sections or "" }}</td><td>{{ r.n_chunks or "" }}</td>
+      <td class="small">{{ r.reason }}</td><td class="small">{{ r.fetched_at | localtime }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endblock %}

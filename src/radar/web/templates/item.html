@@ -1,0 +1,59 @@
+{% extends layout %}
+{% block title %}{{ item.title }}{% endblock %}
+{% block content %}
+<article>
+  <header>
+    <h2>{{ item.title }}</h2>
+    <p class="muted small">
+      {{ item.id }} · {{ item.kind }} from {{ item.source }} · published {{ item.published }}
+      · <a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">open source ↗</a>
+      {% if item.pdf_url %} · <a href="{{ item.pdf_url }}" target="_blank" rel="noopener noreferrer">PDF ↗</a>{% endif %}
+    </p>
+    {% if item.authors %}<p class="small">{{ item.authors[:8] | join(", ") }}{% if item.authors | length > 8 %}, and {{ item.authors | length - 8 }} more{% endif %}</p>{% endif %}
+  </header>
+  {% if item.tldr %}<p><strong>TL;DR</strong> (Semantic Scholar): {{ item.tldr }}</p>{% endif %}
+  <p>{{ item.abstract }}</p>
+  <footer>
+    {% with item_id = item.id %}{% include "partials/_rating.html" %}{% endwith %}
+  </footer>
+</article>
+
+<div class="grid">
+  <article>
+    <h4>Signals</h4>
+    <table>
+      <tr><td>Hugging Face upvotes</td><td>{{ signals.hf_upvotes if signals.hf_upvotes is not none else "–" }}</td></tr>
+      <tr><td>Citations</td><td>{{ signals.citations if signals.citations is not none else "–" }}{% if signals.influential_citations %} ({{ signals.influential_citations }} influential){% endif %}</td></tr>
+      <tr><td>Hacker News</td><td>{% if signals.hn_points is not none %}{{ signals.hn_points }} points, {{ signals.hn_comments or 0 }} comments{% else %}–{% endif %}</td></tr>
+    </table>
+    {% if watch %}
+      <p class="small">Early-buzz watchlist: <strong>{{ watch.status }}</strong>, re-check after {{ watch.recheck_after }}{% if watch.note %} ({{ watch.note }}){% endif %}.</p>
+    {% endif %}
+    <a href="/ask?about={{ item.id }}" role="button" class="outline">Ask about this</a>
+  </article>
+
+  <article id="fulltext">
+    <h4>Full text</h4>
+    {% if full_text and full_text.status == "ok" %}
+      <p class="small">From {{ full_text.source }}: {{ full_text.n_sections }} sections, {{ full_text.n_chunks }} searchable chunks (fetched {{ full_text.fetched_at | localtime }}, {{ full_text.reason }}).</p>
+      <input type="search" name="q" placeholder="Search inside this paper…"
+             hx-get="/items/{{ item.id }}/fulltext/search" hx-trigger="input changed delay:400ms, search"
+             hx-target="#ft-results" hx-indicator="#ft-busy">
+      <span id="ft-busy" class="htmx-indicator" aria-busy="true"></span>
+      <div id="ft-results"></div>
+      <details class="small"><summary>Sections</summary>
+        <ol>{% for s in full_text.sections %}<li>{{ s.heading }}</li>{% endfor %}</ol>
+      </details>
+    {% else %}
+      {% if full_text and full_text.status == "failed" %}
+        <p class="small warn-text">Last try failed: {{ full_text.error }}</p>
+      {% endif %}
+      <p class="small muted">Only the abstract is searchable now. Fetching the full text lets answers use method details.</p>
+      <form hx-post="/items/{{ item.id }}/fulltext" hx-target="this" hx-swap="outerHTML">
+        {% if full_text %}<input type="hidden" name="force" value="1">{% endif %}
+        <button type="submit">{{ "Try again" if full_text else "Fetch full text" }}</button>
+      </form>
+    {% endif %}
+  </article>
+</div>
+{% endblock %}

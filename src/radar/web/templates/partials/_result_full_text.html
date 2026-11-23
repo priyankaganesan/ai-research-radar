@@ -1,0 +1,10 @@
+{% set r = job.result %}
+<article>
+  {% if r.status == "failed" %}
+    <p class="warn-text">Couldn't get the full text of {{ r.item_id }}: {{ r.error }}</p>
+  {% elif r.status == "cached" %}
+    <p>Already fetched: {{ r.sections }} sections, {{ r.chunks }} chunks. <a href="{{ r.item_id | item_url }}">Reload the item</a> to search it.</p>
+  {% else %}
+    <p class="ok">Fetched from {{ r.source }}: {{ r.sections }} sections, {{ r.chunks }} chunks now searchable. <a href="{{ r.item_id | item_url }}">Open the item</a></p>
+  {% endif %}
+</article>

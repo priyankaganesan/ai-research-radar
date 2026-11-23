@@ -1,0 +1,13 @@
+{# One item's rating buttons. Clicking one POSTs the rating and this whole <div> is replaced by
+   the server's new version of it (hx-swap="outerHTML"): the htmx pattern in one place. #}
+<div class="rating" id="rate-{{ item_id | replace(':', '-') | replace('.', '-') }}">
+  {% for value, label in RATINGS.items() %}
+    <button type="button"
+            class="{{ 'chosen' if rating == value else 'outline' }} {{ 'secondary' if value != 'useful' else '' }}"
+            hx-post="/items/{{ item_id }}/rate" hx-vals='{"value": "{{ value }}"}'
+            hx-target="closest .rating" hx-swap="outerHTML"
+            {% if rating == value %}aria-pressed="true"{% endif %}>{{ label }}</button>
+  {% endfor %}
+  {% if saved %}<span class="saved ok">Saved. It updates your profile at the next run.</span>{% endif %}
+  {% if error %}<span class="saved error">{{ error }}</span>{% endif %}
+</div>

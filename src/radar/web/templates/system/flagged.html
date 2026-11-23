@@ -1,0 +1,20 @@
+{% extends layout %}
+{% block title %}Flagged{% endblock %}
+{% block content %}
+<h2>Flagged items</h2>
+<p class="muted small">Items whose text reads like instructions to a model (possible prompt injection). They are kept out of the digest until you read them and release them. Research <em>about</em> attacks is flagged but not held. The text below is shown as plain text, never run.</p>
+<p class="tabs"><a href="/system/flagged" {% if not show_all %}aria-current="page"{% endif %}>Held now</a><a href="/system/flagged?all=1" {% if show_all %}aria-current="page"{% endif %}>Including released</a></p>
+{% if not rows %}<p class="muted">Nothing flagged.</p>{% endif %}
+{% for r in rows %}
+  <article>
+    <header><strong><a href="{{ r.item_id | item_url }}">{{ r.title }}</a></strong>
+      <small class="muted">{{ r.item_id }} · {{ r.source }} · flagged {{ r.flagged_at | localtime }}{% if r.about_attacks %} · about attacks (not held){% endif %}</small></header>
+    <details><summary class="small">Show the suspicious text</summary><div class="snippet">{{ r.snippet }}</div></details>
+    <footer>
+      {% if r.released_at %}<span class="muted small">Released {{ r.released_at | localtime }}</span>
+      {% else %}<button class="outline" hx-post="/system/flagged/{{ r.item_id }}/release" hx-target="this" hx-swap="outerHTML"
+              hx-confirm="Release this item into future digests?">I read it: release</button>{% endif %}
+    </footer>
+  </article>
+{% endfor %}
+{% endblock %}

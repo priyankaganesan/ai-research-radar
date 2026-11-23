@@ -1,0 +1,9 @@
+{% if error %}<p class="error small">{{ error }}</p>{% endif %}
+{% if q and not passages and not error %}<p class="muted small">Nothing matched “{{ q }}”.</p>{% endif %}
+{% for p in passages %}
+  <div class="passage">
+    <p><strong>{% if p.section %}{{ p.section }}{% else %}<a href="{{ p.item_id | item_url }}">{{ p.title }}</a>{% endif %}</strong>
+      <small class="muted">score {{ "%.3f" | format(p.score) }}{% if not p.section %} · {{ p.item_id }} · {{ p.published }}{% endif %}</small></p>
+    <p>{{ p.text[:700] }}{% if p.text | length > 700 %}…{% endif %}</p>
+  </div>
+{% endfor %}

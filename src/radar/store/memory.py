@@ -63,12 +63,20 @@ def latest_ratings(conn: sqlite3.Connection) -> dict[str, str]:
 
 
 def log_question(
-    conn: sqlite3.Connection, text: str, answered: bool, cited: list[str], gap_topic: str = ""
+    conn: sqlite3.Connection,
+    text: str,
+    answered: bool,
+    cited: list[str],
+    gap_topic: str = "",
+    thread_id: str | None = None,
+    answer: str | None = None,
 ) -> int:
-    """Record a question; an unanswered one also opens a gap on `gap_topic`."""
+    """Record a question; an unanswered one also opens a gap on `gap_topic`.
+    `thread_id` and `answer` (migration 009) let the web UI list and reopen conversations."""
     cur = conn.execute(
-        "INSERT INTO questions (text, answered, cited_ids) VALUES (?, ?, ?)",
-        (text, int(answered), json.dumps(cited)),
+        "INSERT INTO questions (text, answered, cited_ids, thread_id, answer)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (text, int(answered), json.dumps(cited), thread_id, answer),
     )
     qid = cur.lastrowid
     if not answered:
@@ -98,6 +106,30 @@ def recent_questions(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
         "SELECT id, asked_at, text, answered FROM questions ORDER BY id DESC LIMIT ?", (limit,)
     )
     return [dict(r) for r in rows]
+
+
+def conversations(conn: sqlite3.Connection, limit: int = 30) -> list[dict]:
+    """Recent conversations (questions sharing a thread), newest first. Questions asked before
+    migration 009 have no thread and aren't listed."""
+    rows = conn.execute(
+        "SELECT thread_id, COUNT(*) AS questions, MIN(asked_at) AS started,"
+        " MAX(asked_at) AS last_asked,"
+        " (SELECT q2.text FROM questions q2 WHERE q2.thread_id = q.thread_id"
+        "  ORDER BY q2.id LIMIT 1) AS first_question"
+        " FROM questions q WHERE thread_id IS NOT NULL"
+        " GROUP BY thread_id ORDER BY MAX(id) DESC LIMIT ?",
+        (limit,),
+    )
+    return [dict(r) for r in rows]
+
+
+def thread_questions(conn: sqlite3.Connection, thread_id: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, asked_at, text, answered, cited_ids, answer FROM questions"
+        " WHERE thread_id = ? ORDER BY id",
+        (thread_id,),
+    )
+    return [{**dict(r), "cited_ids": json.loads(r["cited_ids"])} for r in rows]
 
 
 # ---- early-buzz watchlist ------------------------------------------------------------------

@@ -1,0 +1,41 @@
+{% extends layout %}
+{% block title %}Ask{% endblock %}
+{% block content %}
+<h2>Ask</h2>
+<p class="muted small">Answers come only from papers in the store (and searches the agent runs), with a citation for every claim. With local Qwen an answer can take several minutes; the steps show up as they happen.</p>
+
+<div id="conversation">
+  {% for t in turns %}
+    <div class="turn">
+      <p class="thread-q">{{ t.text }}</p>
+      <article class="answer">
+        {% if t.answer %}{{ t.answer | md(t.cited_ids) }}{% else %}<p class="muted">(Asked before answers were saved.)</p>{% endif %}
+        <footer class="small muted">{{ t.asked_at | localtime }}{% if not t.answered %} · no answer: this became a <a href="/gaps">gap</a>{% endif %}</footer>
+      </article>
+    </div>
+  {% endfor %}
+  {% for job in running %}{% include "partials/_turn.html" %}{% endfor %}
+</div>
+
+<form hx-post="/ask" hx-target="#conversation" hx-swap="beforeend"
+      hx-on::after-request="if (event.detail.successful) this.reset()">
+  {% include "partials/_thread_input.html" %}
+  <textarea name="question" rows="3" required placeholder="{{ 'Ask a follow-up…' if thread_id else 'What would you like to know?' }}">{{ prefill }}</textarea>
+  <fieldset role="group">
+    <label><input type="checkbox" name="verify" value="1" role="switch" {% if verify_default %}checked{% endif %}>
+      Verify each claim (slower: the Verifier checks every sentence against its source)</label>
+  </fieldset>
+  <button type="submit">Ask</button>
+  {% if thread_id %}<a href="/ask" class="small">Start a new conversation</a>{% endif %}
+</form>
+
+{% if recent %}
+  <h4>Recent conversations</h4>
+  <ul>
+    {% for c in recent %}
+      <li><a href="/ask/t/{{ c.thread_id }}">{{ c.first_question }}</a> <small class="muted">{{ c.questions }} question(s) · {{ c.last_asked | localtime }}</small></li>
+    {% endfor %}
+  </ul>
+  <a href="/ask/history" class="small">All conversations</a>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,19 @@
+<section id="pending">
+  {% if decided %}<p class="ok small">{{ decided.status | capitalize }}: remove “{{ decided.topic }}”.</p>{% endif %}
+  {% if p.awaiting_approval %}
+    <article class="review">
+      <h4>Waiting for your approval</h4>
+      <p class="small">The Profile agent wants to remove these topics. A removed topic hides papers, and you wouldn't notice what you no longer see, so it asks first.</p>
+      {% for c in p.awaiting_approval %}
+        <div class="grid">
+          <div><strong>{{ c.action }} “{{ c.topic }}”</strong><br><span class="small muted">{{ c.why }} ({{ c.proposed_at | localtime }})</span></div>
+          <div role="group">
+            <button hx-post="/profile/pending/{{ c.id }}/approve" hx-target="#pending" hx-swap="outerHTML">Approve</button>
+            <button class="secondary" hx-post="/profile/pending/{{ c.id }}/reject" hx-target="#pending" hx-swap="outerHTML">Reject</button>
+          </div>
+        </div>
+      {% endfor %}
+    </article>
+  {% endif %}
+</section>
+{% if oob %}{% include "partials/_badge_pending.html" %}{% endif %}

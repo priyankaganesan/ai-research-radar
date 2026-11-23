@@ -1,0 +1,3 @@
+{"question": "Which paper from this week proves that transformers can never do arithmetic on numbers longer than 100 digits?", "expected_ids": [], "should_abstain": true}
+{"question": "What release date for GPT-7 does OpenAI's internal roadmap give?", "expected_ids": [], "should_abstain": true}
+{"question": "What is the current price per million tokens of the largest Gemini model?", "expected_ids": [], "should_abstain": true}

@@ -1,0 +1,20 @@
+{% extends layout %}
+{% block title %}{{ root.name }}{% endblock %}
+{% block content %}
+<h2>{{ root.name }}</h2>
+<p class="muted small">{{ root.started_at | localtime }} · took {{ root.duration_ms | ms }} · {{ rows | length }} call(s).
+  Bars show each call's time against the longest one.
+  {% if root.langsmith_trace_id %}In LangSmith (project {{ langsmith_project }}), trace <code>{{ root.langsmith_trace_id }}</code>.{% endif %}</p>
+<table class="tree">
+  <thead><tr><th>Call</th><th>Took</th><th></th><th>Arguments → result</th></tr></thead>
+  {% for r in rows %}
+    <tr>
+      <td class="name" style="padding-left: {{ 0.5 + r.depth * 1.25 }}em">{{ "└ " if r.depth else "" }}{{ r.name }} <small class="muted">{{ r.kind }}</small></td>
+      <td>{{ r.duration_ms | ms }}</td>
+      <td style="min-width: 8em"><span class="bar" style="width: {{ (100 * r.duration_ms / longest) | round(1) }}%"></span></td>
+      <td class="small"><details><summary>{{ (r.error or r.summary or "")[:100] }}</summary>
+        <div class="snippet">{{ r.args }}</div>{% if r.error %}<p class="bad">{{ r.error }}</p>{% else %}<p>{{ r.summary }}</p>{% endif %}</details></td>
+    </tr>
+  {% endfor %}
+</table>
+{% endblock %}

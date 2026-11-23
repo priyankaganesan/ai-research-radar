@@ -1,0 +1,44 @@
+{% extends layout %}
+{% block title %}Health{% endblock %}
+{% block content %}
+<h2>Health</h2>
+<div class="grid">
+  <article>
+    <h4>Agent</h4>
+    <table>
+      <tr><td>Database</td><td class="{{ 'ok' if h.db else 'bad' }}">{{ "ok" if h.db else "not reachable" }}</td></tr>
+      <tr><td>Ollama ({{ settings.ollama_host }})</td><td class="{{ 'ok' if h.ollama else 'bad' }}">{{ "running" if h.ollama else "not reachable" }}</td></tr>
+      {% for m, ok in h.models.items() %}
+        <tr><td>Model {{ m }}</td><td class="{{ 'ok' if ok else 'bad' }}">{{ "pulled" if ok else "missing: ollama pull " ~ m }}</td></tr>
+      {% endfor %}
+    </table>
+    {% if h.error %}<p class="bad small">{{ h.error }}</p>{% endif %}
+    <p class="small">Store: {{ stats["items"] }} items, {{ stats.vectors }} vectors ({{ stats.backend }} backend).
+      Digest writer: {{ settings.digest_mode }}. Verify answers by default: {{ "yes" if settings.verify_answers else "no" }}.
+      LangSmith tracing: {{ "on" if settings.langsmith_tracing else "off" }}.</p>
+  </article>
+  <article>
+    <h4>Morning job (launchd)</h4>
+    {% if sched.error %}<p class="muted small">{{ sched.error }}</p>
+    {% elif not sched.installed %}<p>Not installed. <code>radar schedule install</code> sets it up.</p>
+    {% else %}
+      <table>
+        <tr><td>When</td><td>{{ sched.when }}</td></tr>
+        <tr><td>Loaded</td><td>{{ "yes" if sched.loaded else "no" }}</td></tr>
+        {% if sched.state %}<tr><td>State</td><td>{{ sched.state }}</td></tr>{% endif %}
+        {% if sched.runs %}<tr><td>Runs</td><td>{{ sched.runs }}</td></tr>{% endif %}
+        {% if sched.last_exit %}<tr><td>Last exit code</td><td>{{ sched.last_exit }}</td></tr>{% endif %}
+        <tr><td>Log</td><td class="small">{{ sched.log }}</td></tr>
+      </table>
+    {% endif %}
+    <p class="small">{% if daily %}A digest run is going now (pid {{ daily.pid }}, since {{ daily.started }}).{% else %}No digest run is going now.{% endif %}</p>
+  </article>
+</div>
+<article>
+  <h4>Background jobs (since the server started)</h4>
+  {% if not jobs %}<p class="muted small">None yet.</p>{% else %}
+  <table>
+    {% for j in jobs %}<tr><td><a href="/jobs/{{ j.id }}">{{ j.title }}</a></td><td>{{ j.status }}</td><td>{{ j.elapsed() | duration }}</td></tr>{% endfor %}
+  </table>{% endif %}
+</article>
+{% endblock %}

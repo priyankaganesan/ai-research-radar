@@ -1,0 +1,23 @@
+{% extends layout %}
+{% block title %}Sources{% endblock %}
+{% block content %}
+<h2>Sources</h2>
+<p class="muted small">What each source returned on the last {{ days }} days of collection runs. A source that returns nothing two runs in a row is probably broken, not quiet.</p>
+{% if quiet %}<article class="review">Quiet on the last two runs: <strong>{{ quiet | join(", ") }}</strong></article>{% endif %}
+{% if not by_date %}<p class="muted">No runs recorded yet.</p>{% else %}
+<div class="overflow-auto">
+<table>
+  <thead><tr><th>Date</th>{% for n in names %}<th>{{ n }}</th>{% endfor %}</tr></thead>
+  {% for d, runs in by_date.items() %}
+    <tr><td>{{ d }}</td>
+      {% for n in names %}{% set r = runs.get(n) %}
+        <td class="small">{% if not r %}<span class="muted">–</span>
+          {% elif r.error %}<span class="bad" title="{{ r.error }}">error</span>
+          {% else %}<span class="{{ 'warn-text' if not r.fetched else '' }}">{{ r.fetched }} / +{{ r.added }}</span>{% endif %}</td>
+      {% endfor %}</tr>
+  {% endfor %}
+</table>
+</div>
+<p class="small muted">Each cell: fetched / newly added.</p>
+{% endif %}
+{% endblock %}

@@ -5,8 +5,10 @@ description = "A personal agent that tracks, summarizes and explains new AI rese
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.165.0",
     "feedparser>=6.0",
     "httpx>=0.27",
+    "jinja2>=3.1.6",
     "lancedb>=0.20",
     "langchain-core>=0.3",
     "langchain-mcp-adapters>=0.1",
@@ -14,11 +16,14 @@ dependencies = [
     "langgraph>=0.4",
     "langgraph-checkpoint-sqlite>=2.0",
     "langsmith>=0.3",
+    "markdown-it-py>=4.2.0",
     "mcp>=1.9",
     "pydantic-settings>=2.4",
     "pymupdf>=1.24,<2",
+    "python-multipart>=0.0.33",
     "sqlite-vec>=0.1.6",
     "typer>=0.12",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]

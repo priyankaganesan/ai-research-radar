@@ -19,6 +19,7 @@ connection and the settings, including the Semantic Scholar API key), so `_clean
 them before LangSmith or the log sees the arguments.
 """
 
+import contextlib
 import contextvars
 import dataclasses
 import functools
@@ -63,6 +64,13 @@ class _Sink:
 
 _sink = _Sink()
 
+# A connection that overrides the shared one for the current context (see `use_connection`),
+# with its own lock, and a flag that turns logging off for reads (see `quiet`).
+_override: contextvars.ContextVar[tuple[sqlite3.Connection, threading.Lock] | None] = (
+    contextvars.ContextVar("radar_log_conn", default=None)
+)
+_quiet: contextvars.ContextVar[bool] = contextvars.ContextVar("radar_log_quiet", default=False)
+
 # The local row ID of the traced call we're inside, so nested calls record their parent.
 # A ContextVar (not a global) keeps concurrent calls on different threads apart.
 _current: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
@@ -86,6 +94,38 @@ def configure(conn: sqlite3.Connection | None, keep_days: int | None = 30) -> No
 
 def enabled() -> bool:
     return _sink.conn is not None
+
+
+@contextlib.contextmanager
+def use_connection(conn: sqlite3.Connection):
+    """Write this context's log rows through `conn` instead of the shared connection.
+
+    The web app needs this: its background job has its own database connection, and a log row
+    written there joins the job's open transaction, exactly as the CLI's single connection
+    does. LangGraph copies the context into its worker threads, so the override follows the
+    job's tool calls too. Does nothing while the local log is off."""
+    token = _override.set((conn, threading.Lock()))
+    try:
+        yield
+    finally:
+        _override.reset(token)
+
+
+@contextlib.contextmanager
+def quiet():
+    """Don't record traced calls made inside this block, locally or in LangSmith.
+
+    The web app wraps page views in it: opening the Profile page calls the traced
+    `services.profile`, and a trace for every page view would bury the calls that matter
+    (asks, ratings, fetches). Actions are still traced."""
+    from langsmith import tracing_context
+
+    token = _quiet.set(True)
+    try:
+        with tracing_context(enabled=False):
+            yield
+    finally:
+        _quiet.reset(token)
 
 
 # ---- turning arguments and results into short text ------------------------------------------
@@ -173,7 +213,7 @@ def traced(
 
             @functools.wraps(fn)
             async def logged(*args, **kwargs):
-                if _sink.conn is None:
+                if _sink.conn is None or _quiet.get():
                     return await fn(*args, **kwargs)
                 call = _Call(name, kind, summary, fn, args, kwargs)
                 try:
@@ -188,7 +228,7 @@ def traced(
 
             @functools.wraps(fn)
             def logged(*args, **kwargs):
-                if _sink.conn is None:
+                if _sink.conn is None or _quiet.get():
                     return fn(*args, **kwargs)
                 call = _Call(name, kind, summary, fn, args, kwargs)
                 try:
@@ -289,10 +329,11 @@ def _record(*, call_id, parent_id, root_id, name, kind, args, summary, error, st
         str(run.trace_id) if run else None,
         str(run.id) if run else None,
     )
-    with _sink.lock:
-        conn = _sink.conn
-        if conn is None:
-            return
+    override = _override.get()
+    if _sink.conn is None:
+        return
+    conn, lock = override if override else (_sink.conn, _sink.lock)
+    with lock:
         try:
             # Join the caller's open transaction if there is one; otherwise commit right away.
             was_open = conn.in_transaction

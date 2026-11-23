@@ -6,6 +6,8 @@ Nothing outside this module builds graphs or touches the store directly.
 import json
 import sqlite3
 import uuid
+from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date, timedelta
 from pathlib import Path
@@ -38,6 +40,44 @@ class AskResult:
     passages: list[dict] = field(default_factory=list)
     verification: list[dict] = field(default_factory=list)
     full_texts: list[dict] = field(default_factory=list)  # M5: fetched after this question
+
+
+# ---- Progress while a graph runs (used by the web UI) ---------------------------------------
+
+StepCallback = Callable[[str, list[dict]], None]
+
+
+class Cancelled(Exception):
+    """Raised between graph steps when the caller asked to stop."""
+
+
+def run_graph(graph, inputs: dict, config: dict, on_step=None, should_stop=None) -> dict:
+    """Run a compiled graph to the end and return its final state, like `graph.invoke`.
+
+    With no callbacks it *is* `graph.invoke`. Otherwise it uses `graph.stream`, which runs the
+    same graph but hands back control after every node: "updates" says which node just
+    finished and what it returned, "values" is the whole state after that step. Each node in
+    our graphs appends readable entries to `trace`, so the new entries are the progress report.
+    """
+    if on_step is None and should_stop is None:
+        return graph.invoke(inputs, config=config)
+    state: dict = {}
+    seen = 0
+    for mode, chunk in graph.stream(inputs, config=config, stream_mode=["updates", "values"]):
+        if mode == "values":
+            state = chunk
+            continue
+        for node, update in chunk.items():
+            trace = (update or {}).get("trace") if isinstance(update, dict) else None
+            new: list[dict] = []
+            if trace is not None:
+                seen = min(seen, len(trace))  # `prepare` starts a fresh trace
+                new, seen = trace[seen:], len(trace)
+            if on_step:
+                on_step(node, new)
+        if should_stop and should_stop():
+            raise Cancelled("stopped between steps")
+    return state
 
 
 @traced("services.ingest", "chain")
@@ -416,8 +456,13 @@ def daily(
     mode: str | None = None,
     llm: BaseChatModel | None = None,
     learn: bool = True,
+    on_step: StepCallback | None = None,
 ) -> DailyResult:
-    """Run the daily graph and write the digest. mode: "single" (M2) or "multi" (M2.5)."""
+    """Run the daily graph and write the digest. mode: "single" (M2) or "multi" (M2.5).
+
+    While it runs, a lock file (`data/daily.lock`) says so, so the web UI can warn that Qwen is
+    busy and refuse to start a second run. A second run started meanwhile raises
+    `DailyRunning` (the scheduled run turns that into "skipped")."""
     from radar.graphs.daily import build_daily_graph
     from radar.models import get_chat_model
 
@@ -427,7 +472,10 @@ def daily(
         ctx, llm, collect=collect_all if collect else None, mode=mode, learn=learn
     )
     on = on or date.today()
-    state = graph.invoke({"date": on.isoformat()}, config={"run_name": f"radar-daily-{mode}"})
+    with _daily_lock(ctx):
+        state = run_graph(
+            graph, {"date": on.isoformat()}, {"run_name": f"radar-daily-{mode}"}, on_step
+        )
     return DailyResult(
         date=state["date"],
         path=state["path"],
@@ -442,6 +490,47 @@ def daily(
         watch_log=state.get("watch_log", []),
         review=state.get("review", []),
     )
+
+
+class DailyRunning(RuntimeError):
+    """Another daily run holds the lock."""
+
+
+def _lock_path(ctx: AppContext) -> Path:
+    return Path(ctx.settings.db_path).parent / "daily.lock"
+
+
+def daily_running(ctx: AppContext) -> dict | None:
+    """{pid, started} if a daily run is going right now (in any process), else None.
+
+    A lock file rather than a database row: if the run crashes, its PID is gone, and a lock
+    whose process no longer exists is ignored instead of blocking every later run."""
+    import os
+
+    path = _lock_path(ctx)
+    try:
+        info = json.loads(path.read_text())
+        os.kill(int(info["pid"]), 0)  # signal 0 checks the process exists, sends nothing
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return info
+
+
+@contextmanager
+def _daily_lock(ctx: AppContext):
+    import os
+    from datetime import datetime
+
+    if (other := daily_running(ctx)) is not None:
+        raise DailyRunning(f"A daily run (pid {other['pid']}) started at {other['started']}.")
+    path = _lock_path(ctx)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    started = datetime.now().isoformat(timespec="seconds")
+    path.write_text(json.dumps({"pid": os.getpid(), "started": started}))
+    try:
+        yield
+    finally:
+        path.unlink(missing_ok=True)
 
 
 # ---- M6: the scheduled morning run ---------------------------------------------------------
@@ -511,6 +600,8 @@ def scheduled_daily(
         waited += poll_s
     try:
         result = (run_daily or daily)(ctx, mode=mode)
+    except DailyRunning as e:  # e.g. started from the web UI a minute earlier
+        return {"status": "skipped", "message": str(e)}
     except Exception as e:  # logged and notified rather than a silent non-zero exit
         return {"status": "failed", "message": f"{type(e).__name__}: {e}"}
     review = getattr(result, "review", None) or []
@@ -531,6 +622,95 @@ def scheduled_daily(
         "path": result.path,
         "result": result,
     }
+
+
+# ---- Reading digests and conversations (for the web UI) ------------------------------------
+
+
+def digest_dates(ctx: AppContext, limit: int = 60) -> list[str]:
+    rows = ctx.conn.execute(
+        "SELECT DISTINCT date FROM digests ORDER BY date DESC LIMIT ?", (limit,)
+    )
+    return [r[0] for r in rows]
+
+
+def digest_view(ctx: AppContext, on: str | None = None) -> dict | None:
+    """One day's digest as data rather than Markdown: each pick with its summary, the Critic's
+    concerns and your latest rating, plus the items the Critic dropped and why the digest needs
+    review. `on` = None means the latest digest. None if there's no digest for that day."""
+    from radar.store import digests as digest_store
+
+    dates = digest_dates(ctx, limit=10_000)
+    if not dates:
+        return None
+    on = on or dates[0]
+    if on not in dates:
+        return None
+    ratings = memory.latest_ratings(ctx.conn)
+    critic = {
+        r["item_id"]: dict(r)
+        for r in ctx.conn.execute(
+            "SELECT c.*, i.title, i.url FROM critic_decisions c JOIN items i ON i.id = c.item_id"
+            " WHERE c.date = ?",
+            (on,),
+        )
+    }
+    picks = []
+    for row in digest_store.get_digest(ctx.conn, on):
+        summary = ctx.conn.execute(
+            "SELECT text, mode FROM summaries WHERE item_id = ? ORDER BY created_at DESC LIMIT 1",
+            (row["item_id"],),
+        ).fetchone()
+        decision = critic.get(row["item_id"], {})
+        picks.append(
+            {
+                **{k: row[k] for k in ("rank", "slot", "item_id", "title", "url", "reason")},
+                "score": round(row["score"], 3),
+                "summary": summary["text"] if summary else "",
+                "summary_mode": summary["mode"] if summary else "",
+                "concerns": decision.get("concerns", ""),
+                "rating": ratings.get(row["item_id"]),
+            }
+        )
+    in_digest = {p["item_id"] for p in picks}
+    dropped = [
+        {**c, "rating": ratings.get(c["item_id"])}
+        for c in critic.values()
+        if c["decision"] == "drop" and c["item_id"] not in in_digest
+    ]
+    i = dates.index(on)
+    return {
+        "date": on,
+        "newer": dates[i - 1] if i > 0 else None,
+        "older": dates[i + 1] if i + 1 < len(dates) else None,
+        "picks": picks,
+        "dropped": dropped,
+        "review": safety_store.get_review(ctx.conn, on),
+    }
+
+
+def conversations(ctx: AppContext, limit: int = 30) -> list[dict]:
+    return memory.conversations(ctx.conn, limit)
+
+
+def conversation(ctx: AppContext, thread_id: str) -> list[dict]:
+    """Every question in one conversation, with the answer it got."""
+    return memory.thread_questions(ctx.conn, thread_id)
+
+
+def item_rating(ctx: AppContext, item_id: str) -> str | None:
+    return memory.latest_ratings(ctx.conn).get(item_id)
+
+
+def watch_status(ctx: AppContext, item_id: str) -> dict | None:
+    row = ctx.conn.execute("SELECT * FROM watchlist WHERE item_id = ?", (item_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def full_text_record(ctx: AppContext, item_id: str) -> dict | None:
+    from radar.store import full_texts
+
+    return full_texts.get(ctx.conn, item_id)
 
 
 # ---- M4: ratings, profile, watchlist, gaps --------------------------------------------------
@@ -574,9 +754,9 @@ def profile(ctx: AppContext) -> dict:
 
 @traced("services.decide_profile_change", "chain")
 def decide_profile_change(ctx: AppContext, pending_id: int, approve: bool) -> dict:
-    """Approve or reject a topic removal the Profile agent proposed. Only the CLI calls this:
-    approving is a person's decision, so it is deliberately not an MCP tool another agent
-    could call."""
+    """Approve or reject a topic removal the Profile agent proposed. Only the CLI and the web UI
+    call this, both driven by a person clicking or typing: approving is a person's decision, so
+    it is deliberately not an MCP tool another agent could call."""
     from radar.personalize import load_profile, save_profile
 
     with ctx.conn:
@@ -626,6 +806,19 @@ def critic_agreement(ctx: AppContext) -> dict:
 
     rows = safety_store.critic_vs_ratings(ctx.conn)
     return {"rows": rows, **safety.agreement(rows)}
+
+
+def critic_unrated(ctx: AppContext, limit: int = 20) -> list[dict]:
+    """Recent Critic decisions on items you haven't rated useful or not relevant yet: rating
+    them is what gives `critic_agreement` something to compare."""
+    rows = ctx.conn.execute(
+        "SELECT c.date, c.item_id, c.decision, c.concerns, i.title FROM critic_decisions c"
+        " JOIN items i ON i.id = c.item_id WHERE NOT EXISTS (SELECT 1 FROM ratings r"
+        "  WHERE r.item_id = c.item_id AND r.value IN ('useful', 'not_relevant'))"
+        " ORDER BY c.date DESC, c.decision DESC LIMIT ?",
+        (limit,),
+    )
+    return [dict(r) for r in rows]
 
 
 @traced("services.update_profile", "chain")
@@ -801,12 +994,18 @@ def call_stats(ctx: AppContext, days: int = 7) -> list[dict]:
     return tool_calls.stats(ctx.conn, since)
 
 
-def _log_question(ctx: AppContext, question: str, state: dict) -> None:
+def _log_question(ctx: AppContext, question: str, state: dict, thread_id: str | None = None):
     """Remember the question; an abstained one becomes a gap (a topic to collect next run)."""
     cited = state.get("cited") or []
     with ctx.conn:
         memory.log_question(
-            ctx.conn, question, bool(cited), cited, gap_topic=state.get("question") or question
+            ctx.conn,
+            question,
+            bool(cited),
+            cited,
+            gap_topic=state.get("question") or question,
+            thread_id=thread_id,
+            answer=state.get("answer"),
         )
 
 
@@ -863,20 +1062,26 @@ class Agent:
         thread_id: str | None = None,
         no_retrieval: bool = False,
         remember: bool = True,
+        on_step: StepCallback | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> AskResult:
         """Answer a question. remember=False (evals) skips the long-term side effects: no row in
-        `questions`, no gap for an abstention, no full-text fetch."""
+        `questions`, no gap for an abstention, no full-text fetch.
+
+        on_step(node, new_trace_entries) is called after every graph step, so a caller can show
+        progress while the answer is being worked out (the web UI streams it to the browser).
+        should_stop() is checked between steps; returning True raises `Cancelled`."""
         thread_id = thread_id or uuid.uuid4().hex[:8]
         if no_retrieval:
             # The comparison baseline: same model, no tools, no store.
             out = self.llm.invoke(prompts.NO_RETRIEVAL.format(question=question))
             return AskResult(answer=str(out.content), cited=[], thread_id=thread_id)
-        state = self.graph.invoke(
-            {"messages": [HumanMessage(question)]},
-            config={"configurable": {"thread_id": thread_id}, "run_name": "radar-ask"},
+        config = {"configurable": {"thread_id": thread_id}, "run_name": "radar-ask"}
+        state = run_graph(
+            self.graph, {"messages": [HumanMessage(question)]}, config, on_step, should_stop
         )
         if remember:
-            _log_question(self.ctx, question, state)
+            _log_question(self.ctx, question, state, thread_id)
         return AskResult(
             answer=state["answer"],
             cited=state["cited"],

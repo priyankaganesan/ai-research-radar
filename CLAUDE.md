@@ -125,4 +125,5 @@ uv run ruff check .     # lint
 uv run radar daily      # run the daily pipeline
 uv run radar ask "..."  # ask a question
 uv run radar eval       # run LangSmith evals
+uv run radar serve      # web UI at http://127.0.0.1:8000
 ```

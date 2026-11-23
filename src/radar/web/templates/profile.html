@@ -1,0 +1,60 @@
+{% extends layout %}
+{% block title %}Profile{% endblock %}
+{% block content %}
+<h2>Your interest profile</h2>
+<p class="muted small">What the digest scores against. Ratings move the weights a little at each run; the Profile agent can propose topic changes, and removals wait for you.</p>
+
+{% if report %}<article><ul>{% for l in report %}<li>{{ l }}</li>{% endfor %}</ul></article>{% endif %}
+
+{% include "partials/_pending.html" %}
+
+<div class="grid">
+  <article>
+    <h4>Topics</h4>
+    <ul>{% for t in p.topics %}<li>{{ t }}</li>{% endfor %}</ul>
+  </article>
+  <article class="weights">
+    <h4>Score weights</h4>
+    {% for k, v in p.weights.items() %}
+      <div><span>{{ k }}</span><span><span class="bar" style="width: {{ (v * 100) | round(1) }}%"></span></span><span>{{ "%.3f" | format(v) }}</span></div>
+    {% endfor %}
+  </article>
+</div>
+
+<article>
+  <h4>Reserved slots: {{ p.reserved_slots }}</h4>
+  <p class="small">Plan: {{ p.reserved_plan | map("replace", "_", " ") | join(", ") or "none" }}</p>
+  <table>
+    <thead><tr><th>Slot</th><th>Useful</th><th>Rated</th></tr></thead>
+    {% for slot, st in p.slot_stats.items() %}<tr><td>{{ SLOTS.get(slot, slot) }}</td><td>{{ st.useful }}</td><td>{{ st.rated }}</td></tr>{% endfor %}
+  </table>
+  <p class="small">Ratings applied: {{ p.ratings_applied }} · waiting: {{ p.pending_ratings }}</p>
+  <div id="profile-actions">
+    {% if running %}
+      {% with job = running %}{% include "partials/_job.html" %}{% endwith %}
+    {% else %}
+    <form hx-post="/profile/update" hx-target="#profile-actions">
+      <label><input type="checkbox" name="agent" value="1" role="switch" checked> Let the Profile agent review the topics too (asks Qwen)</label>
+      <button type="submit" {% if not p.pending_ratings %}class="secondary"{% endif %}>Apply ratings now</button>
+    </form>
+    {% endif %}
+  </div>
+</article>
+
+{% if p.changes %}
+<article>
+  <h4>Recent changes</h4>
+  <table>
+    {% for c in p.changes %}
+      <tr><td class="small">{{ c.at | localtime }}</td><td>{{ c.kind }}</td>
+        <td class="small">{% for k, v in c.detail.items() %}{% if v %}<strong>{{ k }}</strong>: {{ v }}{% if not loop.last %}; {% endif %}{% endif %}{% endfor %}</td></tr>
+    {% endfor %}
+  </table>
+</article>
+{% endif %}
+
+<details>
+  <summary class="small">Reset</summary>
+  <button class="secondary outline" hx-post="/profile/reset" hx-target="main" hx-confirm="Reset the profile to the defaults? Your ratings are kept.">Reset profile to defaults</button>
+</details>
+{% endblock %}

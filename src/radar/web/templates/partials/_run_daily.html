@@ -1,0 +1,11 @@
+<form hx-post="/digest/run" hx-target="this" hx-swap="outerHTML">
+  <fieldset role="group">
+    <select name="mode" aria-label="Writer">
+      <option value="">Default writer</option>
+      <option value="single">Single summarizer</option>
+      <option value="multi">Multi-agent team (slower)</option>
+    </select>
+    <label class="small"><input type="checkbox" name="collect" value="1" checked> Collect new items first</label>
+    <button type="submit">Run now</button>
+  </fieldset>
+</form>

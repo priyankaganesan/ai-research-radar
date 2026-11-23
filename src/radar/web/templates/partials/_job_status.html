@@ -1,0 +1,7 @@
+{% if job.status == "queued" %}
+  <span aria-busy="true">Waiting: {{ runner.ahead_of(job) }} job(s) ahead of this one</span>
+{% elif job.cancel_requested %}
+  <span aria-busy="true">Stopping after the current step… {{ job.elapsed() | duration }}</span>
+{% else %}
+  <span aria-busy="true">Working · {{ job.elapsed() | duration }}</span>
+{% endif %}

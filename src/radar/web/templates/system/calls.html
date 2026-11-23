@@ -1,0 +1,33 @@
+{% extends layout %}
+{% block title %}Calls{% endblock %}
+{% block content %}
+<h2>Call log</h2>
+<p class="muted small">Every traced call (services, sources, agent tools), recorded locally whether or not LangSmith is on. Page views in this UI aren't recorded; actions are.</p>
+<form hx-get="/system/calls" hx-target="main" hx-push-url="true" hx-trigger="change, submit">
+  <fieldset class="grid">
+    <input name="name" value="{{ f.name }}" placeholder="Name contains, e.g. arxiv">
+    <select name="kind">
+      <option value="">Any kind</option>
+      {% for k in ["service", "source", "mcp", "agent_tool"] %}<option {% if f.kind == k %}selected{% endif %}>{{ k }}</option>{% endfor %}
+    </select>
+    <label><input type="checkbox" name="roots" value="1" {% if f.roots %}checked{% endif %}> Top-level only</label>
+    <label><input type="checkbox" name="errors" value="1" {% if f.errors %}checked{% endif %}> Errors only</label>
+  </fieldset>
+</form>
+<table>
+  <thead><tr><th>When</th><th>Call</th><th>Took</th><th>Result</th></tr></thead>
+  {% for r in rows %}
+    <tr><td class="small">{{ r.started_at | localtime }}</td>
+      <td><a href="/system/calls/{{ r.id }}">{{ r.name }}</a> <small class="muted">{{ r.kind }}</small></td>
+      <td>{{ r.duration_ms | ms }}</td>
+      <td class="small {{ 'bad' if r.error else '' }}">{{ (r.error or r.summary or "")[:140] }}</td></tr>
+  {% else %}<tr><td colspan="4" class="muted">No calls match.</td></tr>{% endfor %}
+</table>
+<details>
+  <summary>Last 7 days by name</summary>
+  <table>
+    <thead><tr><th>Name</th><th>Calls</th><th>Errors</th><th>Average</th><th>Longest</th></tr></thead>
+    {% for s in stats %}<tr><td>{{ s.name }}</td><td>{{ s.calls }}</td><td class="{{ 'bad' if s.errors else '' }}">{{ s.errors }}</td><td>{{ s.avg_ms | ms }}</td><td>{{ s.max_ms | ms }}</td></tr>{% endfor %}
+  </table>
+</details>
+{% endblock %}

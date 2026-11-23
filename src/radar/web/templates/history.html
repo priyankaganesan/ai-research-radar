@@ -1,0 +1,12 @@
+{% extends layout %}
+{% block title %}Conversations{% endblock %}
+{% block content %}
+<h2>Conversations</h2>
+{% if not convs %}<p class="muted">No saved conversations yet. (Questions asked before the web UI existed aren't grouped into conversations.)</p>{% endif %}
+<table>
+  <thead><tr><th>First question</th><th>Questions</th><th>Last asked</th></tr></thead>
+  {% for c in convs %}
+    <tr><td><a href="/ask/t/{{ c.thread_id }}">{{ c.first_question }}</a></td><td>{{ c.questions }}</td><td>{{ c.last_asked | localtime }}</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

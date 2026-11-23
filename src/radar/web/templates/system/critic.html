@@ -1,0 +1,33 @@
+{% extends layout %}
+{% block title %}Critic{% endblock %}
+{% block content %}
+<h2>Does the Critic agree with you?</h2>
+<p class="muted small">In multi-agent digests the Critic keeps or drops each candidate. When you rate the same item, the two can be compared: kept + useful and dropped + not relevant agree.</p>
+{% if not out.n %}
+  <p>No overlap yet. Rate items from multi-agent digests, including the ones the Critic dropped (below each digest, and in the list here).</p>
+{% else %}
+<div class="grid">
+  <article><h3>{{ out.agreement | pct }}</h3><p class="small">overall agreement, {{ out.n }} rated decisions</p></article>
+  <article><h3>{{ out.keep_agreement | pct }}</h3><p class="small">of {{ out.keep_n }} kept items, you found useful</p></article>
+  <article><h3>{{ out.drop_agreement | pct }}</h3><p class="small">of {{ out.drop_n }} dropped items, you found not relevant</p></article>
+</div>
+<table>
+  <thead><tr><th>Date</th><th>Item</th><th>Critic</th><th>You</th><th>Critic's concerns</th></tr></thead>
+  {% for r in out.rows %}
+    {% set agrees = (r.decision, r.rating) in [("keep", "useful"), ("drop", "not_relevant")] %}
+    <tr class="{{ '' if agrees else 'warn-text' }}"><td>{{ r.date }}</td><td><a href="{{ r.item_id | item_url }}">{{ r.title }}</a></td>
+      <td>{{ r.decision }}</td><td>{{ RATINGS[r.rating] }}</td><td class="small">{{ r.concerns }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% if unrated %}
+  <h4>Not rated yet</h4>
+  {% for r in unrated %}
+    <article>
+      <header><strong><a href="{{ r.item_id | item_url }}">{{ r.title }}</a></strong> <small class="muted">{{ r.date }} · Critic: {{ r.decision }}</small></header>
+      {% if r.concerns %}<p class="small concerns">{{ r.concerns }}</p>{% endif %}
+      {% with item_id = r.item_id, rating = ratings.get(r.item_id) %}{% include "partials/_rating.html" %}{% endwith %}
+    </article>
+  {% endfor %}
+{% endif %}
+{% endblock %}

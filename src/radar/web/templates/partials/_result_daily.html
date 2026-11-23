@@ -1,0 +1,7 @@
+{% set r = job.result %}
+<article>
+  <p><strong>Digest for {{ r.date }} is ready:</strong> {{ r.picks | length }} picks from {{ r.candidates }} candidates.
+    <a href="/digest/{{ r.date }}">Read it</a></p>
+  {% if r.review %}<p class="warn-text">Needs review: {{ r.review | join("; ") }}</p>{% endif %}
+  {% if r.collect_log %}<details class="small"><summary>Collection log</summary><ul>{% for l in r.collect_log %}<li>{{ l }}</li>{% endfor %}</ul></details>{% endif %}
+</article>

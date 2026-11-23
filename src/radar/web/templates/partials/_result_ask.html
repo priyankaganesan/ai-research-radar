@@ -1,0 +1,41 @@
+{% set r = job.result %}
+<article class="answer">
+  {{ r.answer | md(r.cited) }}
+  {% if not r.cited %}
+    <p class="small muted">The agent couldn't support an answer, so it didn't guess. The question is now a <a href="/gaps">gap</a>: the next morning run searches for papers on it.</p>
+  {% endif %}
+
+  {% for f in r.full_texts %}
+    <p class="small muted">
+      {% if f.status == "ok" %}{{ f.item_id }} keeps coming up (cited by {{ f.times_cited }} questions), so its full text was fetched: {{ f.chunks }} section chunks are now searchable.
+      {% elif f.status == "failed" %}Tried to fetch the full text of {{ f.item_id }}: {{ f.error }}{% endif %}
+    </p>
+  {% endfor %}
+
+  {% if r.verification %}
+    <details>
+      <summary>Verifier: {{ r.verification | selectattr("supported", "true") | list | length }} of {{ r.verification | length }} claims supported</summary>
+      <table>
+        <thead><tr><th>Claim</th><th>Supported?</th><th>Why</th></tr></thead>
+        {% for v in r.verification %}
+          <tr><td>{{ v.claim }}</td>
+              <td class="{{ 'ok' if v.supported else ('bad' if v.supported is false else 'muted') }}">{{ "yes" if v.supported else ("no" if v.supported is false else "unchecked") }}</td>
+              <td class="small">{{ v.why }}</td></tr>
+        {% endfor %}
+      </table>
+    </details>
+  {% endif %}
+
+  {% if r.passages %}
+    <details>
+      <summary>Sources the agent read ({{ r.passages | length }})</summary>
+      {% with passages = r.passages, q = "" %}{% include "partials/_passages.html" %}{% endwith %}
+    </details>
+  {% endif %}
+
+  <footer class="small muted">
+    {{ job.elapsed() | duration }}
+    {% if job.meta.call_id %} · <a href="/system/calls/{{ job.meta.call_id }}">See how this answer was made</a>{% endif %}
+    · <a href="/ask/t/{{ r.thread_id }}">Conversation</a>
+  </footer>
+</article>

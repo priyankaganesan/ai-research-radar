@@ -1,0 +1,6 @@
+{% extends layout %}
+{% block title %}{{ job.title }}{% endblock %}
+{% block content %}
+<h2>{{ job.title }}</h2>
+{% include "partials/_job.html" %}
+{% endblock %}

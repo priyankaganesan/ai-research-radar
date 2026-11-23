@@ -17,14 +17,19 @@ class AppContext:
     vectors: VectorIndex
 
 
-def build_context(settings: Settings, embeddings: Embeddings | None = None) -> AppContext:
+def build_context(
+    settings: Settings, embeddings: Embeddings | None = None, trace_log: bool = True
+) -> AppContext:
+    """trace_log=False: don't point the tool-call log at this context's connection. The web app
+    opens more than one context and decides itself which connection the log uses."""
     from radar import tracing
     from radar.models import get_embeddings
     from radar.store.db import connect
 
     conn = connect(settings.db_path)
     # Traced calls write their local log rows through this connection (see radar/tracing.py).
-    tracing.configure(conn if settings.tool_log else None, settings.tool_log_keep_days)
+    if trace_log:
+        tracing.configure(conn if settings.tool_log else None, settings.tool_log_keep_days)
     return AppContext(
         settings=settings,
         conn=conn,

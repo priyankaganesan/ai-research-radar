@@ -1,0 +1,70 @@
+{
+  "Q3.1": {
+    "supported": true,
+    "why": "Passage 6.1 states that compaction and transcript retrieval are not competing implementations but store different things, resulting in a 'systematic split by question type,' implying neither is universally superior."
+  },
+  "Q3.2": {
+    "supported": true,
+    "why": "Passage 6.1 explicitly states that compaction wins where the answer is a value computed or normalized once (like temporal arithmetic) and mentions it is worth '6 to 10 points at a third less context' for such questions."
+  },
+  "Q3.3": {
+    "supported": true,
+    "why": "Passage 6.1 states that transcript retrieval wins where the answer is a phrasing because the system 'still has the phrasing and we do not' (referring to the compacted facts)."
+  },
+  "Q3.4": {
+    "supported": true,
+    "why": "Passage 6.1 describes the two approaches as 'composable' and mentions a 'hydration mechanism' that renders raw turns alongside facts, while Section 3.6 details this hybrid rendering structure."
+  },
+  "Q3.5": {
+    "supported": true,
+    "why": "Passage 6.1 explicitly states that the reason they did not widen the composition further is 'that the question's category is not knowable at inference,' preventing a routing decision based on question text alone."
+  },
+  "Q4.1": {
+    "supported": true,
+    "why": "The passage states that packing KV caches into 2-bit/4-bit reduces memory traffic but doesn't automatically save latency due to bottlenecks. It explicitly mentions that converting each value and applying scale/offset consumes scarce instruction-issue throughput, causing 2-bit kernels to reach under 31% of peak HBM throughput on H100/B200."
+  },
+  "Q4.2": {
+    "supported": true,
+    "why": "The passage describes FOSCAR's use of affine folding to apply scales and offsets to the other operand or output instead of per-value, reducing these operations by up to two orders of magnitude while preserving exact arithmetic results."
+  },
+  "Q4.3": {
+    "supported": false,
+    "why": "The passage mentions removing the softmax bottleneck via transposed softmax with fused probability quantization as a system-level optimization for BitDecoding-FP4. However, it does not state that this specifically mitigates 'accuracy-oriented algorithmic overheads' (which are described in the context of vector codebooks in the first paragraph), nor does it link this system-level change to fixing algorithmic overheads."
+  },
+  "Q6.1": {
+    "supported": true,
+    "why": "Passage [2611.09721] states that malicious instructions encountered in one session may be stored and propagated through memory before being retrieved and acted upon in later sessions."
+  },
+  "Q6.2": {
+    "supported": true,
+    "why": "Passage [2611.09721] explicitly states: 'Malicious instructions encountered in one session may be stored and propagated through memory before being retrieved and acted upon in later sessions.'"
+  },
+  "Q6.3": {
+    "supported": true,
+    "why": "Passage [2611.07554] defines the 'memory trap' as a failure where memory from benign interactions causes unsafe or unreliable behavior on later tasks, citing examples like skipping confirmation in low-stakes coding chores leading to skipping verification on high-stakes tasks."
+  },
+  "Q6.4": {
+    "supported": true,
+    "why": "Passage [2611.08644] states that existing agent memory systems primarily handle facts (preferences, entities) rather than procedural knowledge derived from corrections, implying a limitation in retaining behavioral changes unless explicitly encoded."
+  },
+  "Q6.5": {
+    "supported": true,
+    "why": "Passage [2611.09721] mentions a 'memory-aware poison optimization process' to increase poisoning efficacy (a mitigation context), and Passage [2611.08644] notes the need for systems that capture behavioral signals from corrections, but neither provides specific detailed mitigation strategies beyond these general concepts."
+  },
+  "Q7.1": {
+    "supported": true,
+    "why": "The passage states SumOne is a 'standalone summarizer trained to preserve information in agent histories through masked reconstruction' and uses this for 'self-supervision directly from raw trajectories, without reference summaries or downstream task execution.'"
+  },
+  "Q7.2": {
+    "supported": true,
+    "why": "The passage explicitly describes the mechanism: 'Given a summary of the expired history, a frozen reconstructor recovers randomly masked portions... reconstruction quality, combined with a length penalty, provides a task-agnostic reward for optimizing the summarizer with GRPO.'"
+  },
+  "Q7.3": {
+    "supported": true,
+    "why": "The passage confirms that the method yields 'self-supervision directly from raw trajectories, without reference summaries or downstream task execution.'"
+  },
+  "Q7.4": {
+    "supported": null,
+    "why": ""
+  }
+}

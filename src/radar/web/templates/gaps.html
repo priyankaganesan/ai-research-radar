@@ -1,0 +1,15 @@
+{% extends layout %}
+{% block title %}Gaps{% endblock %}
+{% block content %}
+<h2>Knowledge gaps</h2>
+<p class="muted small">Questions the agent couldn't answer from evidence. Each morning run searches arXiv for them; a gap closes once a search brings in new papers.</p>
+{% if not rows %}<p class="muted">No open gaps.</p>{% else %}
+<table>
+  <thead><tr><th>Question</th><th>Open since</th><th>Searches</th><th></th></tr></thead>
+  {% for g in rows %}
+    <tr><td>{{ g.question or g.topic }}</td><td>{{ g.created_at | localtime }}</td><td>{{ g.attempts }}</td>
+      <td><a href="/ask?q={{ (g.question or g.topic) | urlencode }}">Ask again</a></td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endblock %}

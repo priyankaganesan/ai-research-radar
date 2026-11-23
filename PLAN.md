@@ -16,7 +16,7 @@ The plan for the whole codebase. `CLAUDE.md` holds the rules and design; this fi
 | M4 | Long-term memory and feedback | Ratings update the profile, reserved slots, early-buzz watchlist re-checks, gap logging; a Profile agent turns ratings and gaps into interest updates (uses M2.5's agent pattern) | M2, M3, M2.5 |
 | M4.1 | Trace every call | Services, source fetchers and MCP tools traced to LangSmith (`@traced`); a local `tool_calls` log that works with tracing off; `radar calls` shows runs as trees, errors and timings | M1, M1.6, M3 |
 | M5 | Going deeper | Full-text fetch and section chunking when a paper gets repeated questions | M1 |
-| M7 | FastAPI web UI | `radar serve` opens a local web app: ask with streamed answers and citations, browse and rate the digest, search the store, watchlist | M2, M4 (build before recording the presentation) |
+| M7 | FastAPI web UI | `radar serve` opens a local web app: ask with streamed answers and citations, browse and rate the digest, search the store, watchlist. Built 2026-11-21 (see the M7 section): HTML + htmx only (no JSON API), background jobs with SSE progress, vendored htmx/Pico, profile approvals, flagged items, call log and Critic pages | M2, M4 (build before recording the presentation) |
 | M6 | Evals and polish | LangSmith eval suite, model comparisons, scheduled runs, graph diagrams, demo script. Stretch 1: a pgvector backend. Stretch 2: full cloud pipeline (see Stretch goals). Built 2026-11-14: the launchd morning job and the eval suite only; graph diagrams, demo script and both stretch goals left out for now | all |
 | M6.1 | Safety guardrails | Source text fenced in `<source>` tags with a data-not-instructions rule; instruction-like items flagged and held back (`radar flagged`); a digest-level "needs review" flag (low Verifier support, many cuts, Critic at its cap, held items, quiet sources); per-source run log and quiet-source warning (`radar sources`); Profile agent topic removals wait for approval (`radar profile --approve`); Critic agreement with ratings (`radar critic`). Built 2026-11-16 | M2.5, M4, M6 |
 
@@ -298,7 +298,7 @@ radar compare-backends [--file F] [--k 5] [--sample 50]    # M1.5
 radar mcp [--http]                                         # M1.6
 radar daily [--mode single|multi] [--no-collect] [--date D]  # M2, M2.5
 radar compare-agents [--date D] [--file F]                 # M2.5
-radar serve [--port 8000]                                  # M7
+radar serve [--port 8000] [--open]                         # M7: web UI at http://127.0.0.1:8000
 radar fulltext [ITEM_ID] [-q QUERY] [--force]               # M5: fetch/list full texts
 radar health                                               # M6: db, Ollama, models reachable
 radar schedule install|status|run|remove [--at HH:MM]     # M6: launchd morning job
@@ -345,23 +345,19 @@ Built 2026-11-14 (`radar/schedule.py`):
 
 ## FastAPI web UI (M7)
 
-FastAPI serves both a JSON API and simple server-rendered pages. The pages use Jinja2 templates plus **htmx** for interactivity (rating buttons, streaming answers) without a JavaScript framework.
+Built 2026-11-21. FastAPI serves server-rendered pages (Jinja2 templates); **htmx** swaps in the fragments that change (rating buttons, approve/reject, search results, job progress). No JavaScript of our own.
 
-- **API (`/api`)**, with Pydantic request and response models (and auto-generated docs at `/docs`):
-  - `POST /api/ask` with `{question, thread_id?, no_retrieval?}`: streams the graph's steps and final answer as Server-Sent Events, using LangGraph's `astream`
-  - `GET /api/search?q=&k=&kind=&since=`
-  - `GET /api/items/{id}`
-  - `GET /api/digest/{date}` (default today), `POST /api/ratings` with `{item_id, value}`
-  - `GET /api/watchlist`
-  - `GET /api/health`: checks that the database, the Ollama connection and the models are reachable
-- **Pages:**
-  - **Ask:** a chat view with clickable citations and an expandable "how I got this" panel showing each thought, tool call and observation. This is the ReAct trace, made visible for the demo.
-  - **Digest:** today's 8 items with slot labels, reasons and useful / not relevant / skip buttons.
-  - **Search** and **Item** pages, plus **Watchlist**.
-- **Runs locally:** `radar serve` starts uvicorn on `127.0.0.1:8000`, with **one worker** (the Qwen graph and the embedded stores assume one process). No login, because it's bound to localhost only.
-- **Lifespan:** open the database and build the graphs once at startup; inject them into routes with `Depends`.
-- **Async:** route handlers are `async`. Blocking work (SQLite, Ollama calls through sync clients) runs in a threadpool.
-- **Testing:** `TestClient` with the fake chat model and a temp store. Covers each endpoint, the SSE stream shape and the rating flow.
+**Changed from the first plan:** no JSON `/api`. MCP is already the machine-facing door, and htmx wants HTML, so a JSON API would be a fourth interface nobody uses. htmx, its SSE extension and Pico CSS are **vendored** into `web/static/` (pinned htmx 2.0.4, htmx-ext-sse 2.2.2, Pico 2.0.6) instead of loaded from a CDN, so the app works offline and no third-party server ships code into it.
+
+- **Pages:** Today (digest by slot, ratings, the safety review banner, Critic drops), past digests, Item (signals, watchlist status, full text fetch and search inside it), Ask (live steps, answer with linked citations, sources read, Verifier table, follow-ups, conversation history), Search (as you type), Profile (topics, weights, reserved slots, approve/reject topic removals, apply ratings now), Watchlist, Gaps, Library (full texts), and System: Health (incl. the launchd job), Sources, Flagged (release), Calls (log + call tree), Critic.
+- **Long work runs as jobs** (`web/jobs.py`): ask, full-text fetch, digest run, profile update with the agent. One worker thread, one queue (Ollama runs one generation at a time on 16 GB anyway), in memory (the services save what matters), cooperative cancel between graph steps. The page follows a job over Server-Sent Events (`/jobs/{id}/events`); reconnects resume via `Last-Event-ID`.
+- **Progress:** `services.run_graph` runs a graph with `stream(stream_mode=["updates", "values"])` and reports each node's new `trace` entries; `Agent.ask` and `daily` take `on_step` (and ask takes `should_stop`). With no callbacks it is plain `invoke`.
+- **Two database connections:** requests share one (taking turns under a lock), the job thread has its own; tool-call log rows follow the job's connection (`tracing.use_connection`). WAL lets them and the launchd run work at once.
+- **Daily lock:** `data/daily.lock` (pid + start) while `daily` runs. The web UI shows a banner and refuses a second run; `scheduled_daily` returns "skipped". A lock whose process is gone is ignored.
+- **Tracing:** page views run under `tracing.quiet()` (no log rows, no LangSmith runs); actions are traced as usual. An answer links to its call tree.
+- **Safety:** bound to 127.0.0.1; `TrustedHostMiddleware` (localhost only); every POST needs `HX-Request` and a same-origin `Origin` (CSRF); autoescaping everywhere; Markdown rendered with raw HTML off and only http(s)/relative links. Approving topic removals and releasing flagged items are buttons for a person, still not MCP tools.
+- **Migration 009:** `questions.thread_id`, `questions.answer`, so conversations can be listed and reopened.
+- **Testing:** `tests/test_web.py`, TestClient with a temp store, scripted models and an inline job runner: pages, fragments, ratings, approvals, release, CSRF/host/escaping guards, ask jobs, the SSE stream, the runner (order, cancel, failure), the daily lock, quiet tracing.
 
 ## Explorations (optional, one at a time)
 

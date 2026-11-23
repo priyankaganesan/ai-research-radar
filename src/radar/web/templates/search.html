@@ -1,0 +1,21 @@
+{% extends layout %}
+{% block title %}Search{% endblock %}
+{% block content %}
+<h2>Search the store</h2>
+<form action="/search" method="get" hx-get="/search" hx-target="#results" hx-push-url="true"
+      hx-trigger="input changed delay:400ms from:find input[name=q], change from:find select, change from:find input[type=date], submit"
+      hx-indicator="#search-busy">
+  <input type="search" name="q" value="{{ q }}" placeholder="e.g. speculative decoding, test-time compute…" autofocus>
+  <fieldset class="grid">
+    <label>Kind
+      <select name="kind">
+        <option value="">Everything</option>
+        {% for k in ["paper", "post"] %}<option value="{{ k }}" {% if kind == k %}selected{% endif %}>{{ k }}s</option>{% endfor %}
+      </select>
+    </label>
+    <label>Published since <input type="date" name="since" value="{{ since }}"></label>
+  </fieldset>
+</form>
+<span id="search-busy" class="htmx-indicator" aria-busy="true">Searching…</span>
+<div id="results">{% include "partials/_passages.html" %}</div>
+{% endblock %}

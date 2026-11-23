@@ -1,0 +1,5 @@
+<div class="turn">
+  <p class="thread-q">{{ job.meta.question }}</p>
+  {% include "partials/_job.html" %}
+</div>
+{% if oob %}{% with thread_id = job.meta.thread_id %}{% include "partials/_thread_input.html" %}{% endwith %}{% endif %}

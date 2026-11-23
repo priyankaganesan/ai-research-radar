@@ -1,0 +1,19 @@
+{% extends layout %}
+{% block title %}Watchlist{% endblock %}
+{% block content %}
+<h2>Early-buzz watchlist</h2>
+<p class="muted small">Papers that got upvotes before citations. After 2 to 4 weeks the morning run re-checks their citations and marks each one established or dropped.</p>
+<nav class="tabs">
+  <a href="/watchlist" {% if not status %}aria-current="page"{% endif %}>All</a>
+  {% for s in statuses %}<a href="/watchlist?status={{ s }}" {% if status == s %}aria-current="page"{% endif %}>{{ s | capitalize }}</a>{% endfor %}
+</nav>
+{% if not rows %}<p class="muted">Nothing here.</p>{% else %}
+<table>
+  <thead><tr><th>Paper</th><th>Status</th><th>Added</th><th>Re-check after</th><th>Citations at add</th><th>Note</th></tr></thead>
+  {% for r in rows %}
+    <tr><td><a href="{{ r.item_id | item_url }}">{{ r.title }}</a></td><td>{{ r.status }}</td><td>{{ r.added_at }}</td>
+      <td>{{ r.recheck_after }}</td><td>{{ r.citations_at_add }}</td><td class="small">{{ r.note or "" }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endblock %}

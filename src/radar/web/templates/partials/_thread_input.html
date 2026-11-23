@@ -1,0 +1,3 @@
+{# The conversation this form continues. After the first question, the server sends a new copy
+   "out of band" (hx-swap-oob) so the next question becomes a follow-up in the same thread. #}
+<input type="hidden" id="thread-id" name="thread_id" value="{{ thread_id }}"{% if oob %} hx-swap-oob="true"{% endif %}>

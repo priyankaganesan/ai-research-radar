@@ -286,6 +286,38 @@ def mcp(
 
 
 @app.command()
+def serve(
+    port: int = typer.Option(8000, help="Port on this Mac."),
+    host: str = typer.Option(
+        "127.0.0.1", help="Address to listen on. Keep 127.0.0.1 so only this Mac can reach it."
+    ),
+    open_: bool = typer.Option(False, "--open", help="Open the page in your browser."),
+) -> None:
+    """Start the web UI (FastAPI + htmx) at http://127.0.0.1:8000. Ctrl-C stops it."""
+    import threading
+    import webbrowser
+
+    import uvicorn
+
+    from radar.web.app import create_app
+
+    if host not in ("127.0.0.1", "localhost"):
+        typer.secho(
+            f"Warning: listening on {host} lets other computers on the network reach your"
+            " agent. The app only accepts requests addressed to localhost, so pages from"
+            " another machine are refused anyway.",
+            fg="yellow",
+            err=True,
+        )
+    url = f"http://127.0.0.1:{port}"
+    typer.echo(f"Radar web UI at {url} (Ctrl-C to stop)")
+    if open_:
+        threading.Timer(1.0, webbrowser.open, (url,)).start()
+    # One worker process: the job runner and the in-memory job list live in this process.
+    uvicorn.run(create_app(), host=host, port=port, workers=1, log_level="warning")
+
+
+@app.command()
 def daily(
     no_collect: bool = typer.Option(
         False, "--no-collect", help="Skip fetching; build the digest from the store as it is."
